@@ -1,0 +1,40 @@
+[
+  {
+    "name": "experiment_1",
+    "description": "Try wider model",
+    "config": {
+      "RUN_ID": "custom_exp1",
+      "ITERATIONS": "500",
+      "TRAIN_BATCH_TOKENS": "131072",
+      "MODEL_DIM": "640",
+      "NUM_LAYERS": "9",
+      "MLP_MULT": "2",
+      "SEED": "42"
+    }
+  },
+  {
+    "name": "experiment_2",
+    "description": "Try deeper model",
+    "config": {
+      "RUN_ID": "custom_exp2",
+      "ITERATIONS": "500",
+      "TRAIN_BATCH_TOKENS": "131072",
+      "MODEL_DIM": "512",
+      "NUM_LAYERS": "11",
+      "MLP_MULT": "2",
+      "SEED": "42"
+    }
+  },
+  {
+    "name": "experiment_3",
+    "description": "Try different optimizer settings",
+    "config": {
+      "RUN_ID": "custom_exp3",
+      "ITERATIONS": "500",
+      "TRAIN_BATCH_TOKENS": "131072",
+      "MATRIX_LR": "0.06",
+      "MUON_MOMENTUM": "0.98",
+      "SEED": "42"
+    }
+  }
+]
