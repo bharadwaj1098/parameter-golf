@@ -297,14 +297,26 @@ def run_single_experiment(exp_config, experiment_number, total_experiments):
             log_content = f.read()
 
             # Find final BPB (look for "final_int8_zlib_roundtrip_exact")
-            for line in log_content.split('\n'):
+            # NOTE: The log file contains the source code at the top, so we need to
+            # search for the LAST occurrence (the actual output, not the code)
+            lines = log_content.split('\n')
+            for line in reversed(lines):
                 if "final_int8_zlib_roundtrip_exact" in line:
                     parts = line.split()
                     for i, part in enumerate(parts):
                         if part.startswith("val_bpb:"):
-                            val_bpb = float(parts[i].split(':')[1])
+                            try:
+                                val_bpb = float(part.split(':')[1])
+                            except (ValueError, IndexError):
+                                continue
                         if part.startswith("val_loss:"):
-                            val_loss = float(parts[i].split(':')[1])
+                            try:
+                                val_loss = float(part.split(':')[1])
+                            except (ValueError, IndexError):
+                                continue
+                    # Found the line, stop searching
+                    if val_bpb is not None and val_loss is not None:
+                        break
 
     print("\n" + "=" * 80)
     print(f"EXPERIMENT COMPLETE: {name}")
