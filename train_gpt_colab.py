@@ -1,8 +1,8 @@
 """
 Google Colab adapter for Parameter Golf
 
-This script sets up and runs train_gpt_single_gpu.py on a single GPU in Google Colab.
-It uses a properly adapted single-GPU version without distributed training overhead.
+This script sets up and runs train_gpt.py on a single GPU in Google Colab.
+train_gpt.py automatically detects single-GPU mode when RANK/WORLD_SIZE are not set.
 
 Usage in Colab:
     !python train_gpt_colab.py --mode setup    # First time: install deps + download data
@@ -88,6 +88,8 @@ def get_colab_config(mode="train"):
     if mode == "quick":
         # Quick smoke test
         return {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
             "RUN_ID": "colab_smoke",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",  # Small batch for any GPU
@@ -108,6 +110,8 @@ def get_colab_config(mode="train"):
         batch_tokens = "524288" if gpu_memory > 20 else "262144"  # Reduce for small GPUs
 
         return {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
             "RUN_ID": "colab_baseline",
             "ITERATIONS": "2000",  # Fewer steps (1 GPU is slower)
             "TRAIN_BATCH_TOKENS": batch_tokens,
@@ -130,6 +134,8 @@ def get_colab_config(mode="train"):
     elif mode == "experiment":
         # For your own experiments
         return {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
             "RUN_ID": "colab_experiment",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "262144",
@@ -171,17 +177,22 @@ def run_training(mode="train"):
     env = os.environ.copy()
     env.update(config)
 
+    # IMPORTANT: Remove any distributed training env vars to ensure single-GPU mode
+    # train_gpt.py detects single-GPU mode when RANK/WORLD_SIZE are absent
+    for key in ["RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"]:
+        env.pop(key, None)
+
     print("Configuration:")
     for key, val in config.items():
         print(f"  {key}: {val}")
     print()
 
-    # Run training with single GPU version (no distributed setup needed)
-    print("Starting training with single-GPU optimized script...")
+    # Run training (train_gpt.py auto-detects single-GPU mode)
+    print("Starting training...")
     print("=" * 60)
 
     result = subprocess.run(
-        ["python3", "train_gpt_single_gpu.py"],
+        ["python3", "train_gpt.py"],
         env=env,
         check=False  # Don't raise on non-zero exit (we'll check manually)
     )

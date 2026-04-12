@@ -1,5 +1,8 @@
 """
-Run multiple experiments sequentially on Google Colab.
+Run multiple experiments sequentially on Google Colab or any single GPU.
+
+This script calls train_gpt.py multiple times with different configs.
+train_gpt.py automatically runs in single-GPU mode when no distributed env vars are set.
 
 Usage:
     !python run_experiments.py --experiments quick      # 3 quick tests (50 steps each)
@@ -221,8 +224,12 @@ def run_single_experiment(exp_config, experiment_number, total_experiments):
         print(f"  {key}: {val}")
     print()
 
-    # Set default values (train_gpt_single_gpu.py has single GPU hardcoded)
+    # Set default values
+    # IMPORTANT: Do NOT set RANK/WORLD_SIZE/LOCAL_RANK here
+    # train_gpt.py auto-detects single-GPU mode when these are absent
     defaults = {
+        "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
+        "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
         "TRAIN_SEQ_LEN": "1024",
         "VAL_LOSS_EVERY": "0",  # Only at end for speed
         "VAL_BATCH_SIZE": config.get("TRAIN_BATCH_TOKENS", "131072"),
@@ -236,7 +243,16 @@ def run_single_experiment(exp_config, experiment_number, total_experiments):
     }
 
     # Merge: defaults, then user config (user config overrides)
-    env = os.environ.copy()
+    # Start with clean environment (no inherited RANK/WORLD_SIZE from parent)
+    env = {}
+    essential_keys = [
+        "PATH", "HOME", "USER", "SHELL",
+        "CUDA_VISIBLE_DEVICES", "CUDA_HOME", "LD_LIBRARY_PATH",
+        "PYTHONPATH", "VIRTUAL_ENV", "CONDA_DEFAULT_ENV"
+    ]
+    for key in essential_keys:
+        if key in os.environ:
+            env[key] = os.environ[key]
     env.update(defaults)
     env.update(config)
 
@@ -248,7 +264,7 @@ def run_single_experiment(exp_config, experiment_number, total_experiments):
     print("-" * 80)
 
     result = subprocess.run(
-        ["python3", "train_gpt_single_gpu.py"],
+        ["python3", "train_gpt.py"],
         env=env,
         capture_output=False,  # Show output in real-time
     )
