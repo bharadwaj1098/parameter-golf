@@ -28,7 +28,7 @@ SEED=<SEED> RUN_ID=<RUN_ID> \
   SMEAR_GATE=1 SMEAR_GATE_WIDTH=12 \
   GATE_ATTN_OUT=1 GATE_ATTN_SRC=proj GATE_WIDTH=12 \
   QK_GAIN_INIT=5.25 \
-  TTT_ENABLED=1 TTT_LR=0.005 \
+  TTT_ENABLED=1 \
   torchrun --standalone --nproc_per_node=8 train_gpt.py
 ```
 
