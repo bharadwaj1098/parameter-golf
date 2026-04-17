@@ -321,7 +321,7 @@ examples:
   python run.py --config my_exps.json    Run custom experiment config
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "quick_smoke", "train", "experiment", "sweep", "ablation"],
+                        choices=["setup", "quick_smoke", "quick", "train", "experiment", "sweep", "ablation"],
                         help="Run mode or experiment suite")
     parser.add_argument("--config", type=str, help="Path to custom experiment JSON file")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
