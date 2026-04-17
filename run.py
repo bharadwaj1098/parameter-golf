@@ -47,7 +47,7 @@ DEFAULTS = {
 # ============================================================================
 
 PRESETS = {
-    "quick": {
+    "quick_smoke": {
         "RUN_ID": "quick_smoke",
         "ITERATIONS": "50",
         "TRAIN_BATCH_TOKENS": "65536",
@@ -313,7 +313,7 @@ def main():
         epilog="""
 examples:
   python run.py setup                    Install deps + download SP8192 data
-  python run.py quick                    Smoke test (50 steps)
+  python run.py quick_smoke              Smoke test (50 steps)
   python run.py train                    Full training (2000 steps)
   python run.py experiment               Custom experiment (edit PRESETS in run.py)
   python run.py sweep                    LR + MLP width sweep
@@ -321,7 +321,7 @@ examples:
   python run.py --config my_exps.json    Run custom experiment config
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "quick", "train", "experiment", "sweep", "ablation"],
+                        choices=["setup", "quick_smoke", "train", "experiment", "sweep", "ablation"],
                         help="Run mode or experiment suite")
     parser.add_argument("--config", type=str, help="Path to custom experiment JSON file")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
