@@ -4,7 +4,7 @@ Unified script for Parameter Golf: setup, training, and experiments.
 Usage:
     python run.py setup                                  # Install deps + download data
     python run.py train                                  # Full training (2000 steps)
-    python run.py quick                                  # Smoke test (50 steps)
+    python run.py quick_smoke                            # Smoke test (50 steps)
     python run.py experiment                             # Custom experiment
     python run.py sweep                                  # LR + MLP width sweep (500 steps each)
     python run.py ablation                               # Layer/MLP ablation (1000 steps each)
