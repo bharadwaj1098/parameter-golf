@@ -52,9 +52,10 @@ def setup_colab_environment():
 
     # Download small subset for testing
     subprocess.run([
+        "MATCHED_FINEWEB_REPO_ID=kevclark/parameter-golf",
         "python3", "data/cached_challenge_fineweb.py",
-        "--variant", "sp1024",
-        "--train-shards", "10"
+        "--variant", "sp8192",
+        "--train-shards", "128"
     ], check=True)
 
     print("\n" + "=" * 60)
@@ -88,12 +89,12 @@ def get_colab_config(mode="train"):
     if mode == "quick":
         # Quick smoke test
         return {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "colab_smoke",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",  # Small batch for any GPU
-            "TRAIN_SEQ_LEN": "1024",
+            "TRAIN_SEQ_LEN": "8192",
             "VAL_LOSS_EVERY": "0",  # Only at end
             "VAL_BATCH_SIZE": "65536",
             "TRAIN_LOG_EVERY": "10",
@@ -110,12 +111,12 @@ def get_colab_config(mode="train"):
         batch_tokens = "524288" if gpu_memory > 20 else "262144"  # Reduce for small GPUs
 
         return {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "colab_baseline",
             "ITERATIONS": "2000",  # Fewer steps (1 GPU is slower)
             "TRAIN_BATCH_TOKENS": batch_tokens,
-            "TRAIN_SEQ_LEN": "1024",
+            "TRAIN_SEQ_LEN": "8192",
             "VAL_LOSS_EVERY": "500",
             "VAL_BATCH_SIZE": batch_tokens,
             "TRAIN_LOG_EVERY": "50",
@@ -134,12 +135,12 @@ def get_colab_config(mode="train"):
     elif mode == "experiment":
         # For your own experiments
         return {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "colab_experiment",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "262144",
-            "TRAIN_SEQ_LEN": "1024",
+            "TRAIN_SEQ_LEN": "8192",
             "VAL_LOSS_EVERY": "200",
             "VAL_BATCH_SIZE": "262144",
             "TRAIN_LOG_EVERY": "50",
@@ -258,7 +259,7 @@ def main():
         setup_colab_environment()
     else:
         # Check if data exists
-        data_dir = Path("data/datasets/fineweb10B_sp1024")
+        data_dir = Path("data/datasets/fineweb10B_sp8192")
         if not data_dir.exists() or not list(data_dir.glob("*.bin")):
             print("ERROR: Dataset not found!")
             print("\nRun setup first:")

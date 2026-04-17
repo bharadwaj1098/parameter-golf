@@ -3,6 +3,8 @@
     "name": "experiment_1",
     "description": "Try wider model",
     "config": {
+      "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+      "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
       "RUN_ID": "custom_exp1",
       "ITERATIONS": "500",
       "TRAIN_BATCH_TOKENS": "131072",
@@ -16,6 +18,8 @@
     "name": "experiment_2",
     "description": "Try deeper model",
     "config": {
+      "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+      "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
       "RUN_ID": "custom_exp2",
       "ITERATIONS": "500",
       "TRAIN_BATCH_TOKENS": "131072",
@@ -29,6 +33,8 @@
     "name": "experiment_3",
     "description": "Try different optimizer settings",
     "config": {
+      "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+      "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
       "RUN_ID": "custom_exp3",
       "ITERATIONS": "500",
       "TRAIN_BATCH_TOKENS": "131072",

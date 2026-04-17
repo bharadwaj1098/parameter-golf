@@ -28,6 +28,8 @@ QUICK_EXPERIMENTS = [
         "name": "baseline",
         "description": "9L × 512d baseline",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "exp_baseline",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",
@@ -40,6 +42,8 @@ QUICK_EXPERIMENTS = [
         "name": "wider_mlp",
         "description": "9L × 512d, MLP 3x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "exp_wider_mlp",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",
@@ -52,6 +56,8 @@ QUICK_EXPERIMENTS = [
         "name": "more_layers",
         "description": "11L × 512d, MLP 2x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "exp_more_layers",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",
@@ -68,6 +74,8 @@ SWEEP_EXPERIMENTS = [
         "name": "lr_low",
         "description": "Lower learning rate",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_lr_low",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -79,6 +87,8 @@ SWEEP_EXPERIMENTS = [
         "name": "lr_baseline",
         "description": "Baseline learning rate",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_lr_baseline",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -90,6 +100,8 @@ SWEEP_EXPERIMENTS = [
         "name": "lr_high",
         "description": "Higher learning rate",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_lr_high",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -102,6 +114,8 @@ SWEEP_EXPERIMENTS = [
         "name": "mlp_2x",
         "description": "MLP 2x (baseline)",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_mlp_2x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -113,6 +127,8 @@ SWEEP_EXPERIMENTS = [
         "name": "mlp_3x",
         "description": "MLP 3x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_mlp_3x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -124,6 +140,8 @@ SWEEP_EXPERIMENTS = [
         "name": "mlp_4x",
         "description": "MLP 4x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "sweep_mlp_4x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -139,6 +157,8 @@ ABLATION_EXPERIMENTS = [
         "name": "baseline_9L",
         "description": "Baseline 9L",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "ablation_baseline",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -151,6 +171,8 @@ ABLATION_EXPERIMENTS = [
         "name": "baseline_10L",
         "description": "+1 layer (10L)",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "ablation_10L",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -163,6 +185,8 @@ ABLATION_EXPERIMENTS = [
         "name": "baseline_11L",
         "description": "+2 layers (11L)",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "ablation_11L",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -175,6 +199,8 @@ ABLATION_EXPERIMENTS = [
         "name": "baseline_9L_mlp3x",
         "description": "9L + MLP 3x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "ablation_mlp3x",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
@@ -187,6 +213,8 @@ ABLATION_EXPERIMENTS = [
         "name": "baseline_10L_mlp3x",
         "description": "10L + MLP 3x",
         "config": {
+            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
             "RUN_ID": "ablation_10L_mlp3x",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
