@@ -94,11 +94,12 @@ def get_colab_config(mode="train"):
             "RUN_ID": "colab_smoke",
             "ITERATIONS": "50",
             "TRAIN_BATCH_TOKENS": "65536",  # Small batch for any GPU
-            "TRAIN_SEQ_LEN": "8192",
+            "TRAIN_SEQ_LEN": "2048",
             "VAL_LOSS_EVERY": "0",  # Only at end
             "VAL_BATCH_SIZE": "65536",
             "TRAIN_LOG_EVERY": "10",
             "MAX_WALLCLOCK_SECONDS": "300",  # 5 min
+            "VOCAB_SIZE": "8192",
             "SEED": "42",
         }
 
@@ -116,14 +117,14 @@ def get_colab_config(mode="train"):
             "RUN_ID": "colab_baseline",
             "ITERATIONS": "2000",  # Fewer steps (1 GPU is slower)
             "TRAIN_BATCH_TOKENS": batch_tokens,
-            "TRAIN_SEQ_LEN": "8192",
+            "TRAIN_SEQ_LEN": "2048",
             "VAL_LOSS_EVERY": "500",
             "VAL_BATCH_SIZE": batch_tokens,
             "TRAIN_LOG_EVERY": "50",
             "MAX_WALLCLOCK_SECONDS": "3600",  # 1 hour
             "SEED": "42",
             # Model config (same as baseline)
-            "VOCAB_SIZE": "1024",
+            "VOCAB_SIZE": "8192",
             "NUM_LAYERS": "9",
             "MODEL_DIM": "512",
             "NUM_HEADS": "8",
@@ -140,7 +141,8 @@ def get_colab_config(mode="train"):
             "RUN_ID": "colab_experiment",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "262144",
-            "TRAIN_SEQ_LEN": "8192",
+            "TRAIN_SEQ_LEN": "2048",
+            "VOCAB_SIZE": "8192",
             "VAL_LOSS_EVERY": "200",
             "VAL_BATCH_SIZE": "262144",
             "TRAIN_LOG_EVERY": "50",

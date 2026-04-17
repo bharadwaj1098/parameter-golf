@@ -36,6 +36,7 @@ QUICK_EXPERIMENTS = [
             "NUM_LAYERS": "9",
             "MLP_MULT": "2",
             "SEED": "42",
+            "VOCAB_SIZE": "8192",
         }
     },
     {
@@ -49,6 +50,7 @@ QUICK_EXPERIMENTS = [
             "TRAIN_BATCH_TOKENS": "65536",
             "NUM_LAYERS": "9",
             "MLP_MULT": "3",
+            "VOCAB_SIZE": "8192",
             "SEED": "42",
         }
     },
@@ -63,6 +65,7 @@ QUICK_EXPERIMENTS = [
             "TRAIN_BATCH_TOKENS": "65536",
             "NUM_LAYERS": "11",
             "MLP_MULT": "2",
+            "VOCAB_SIZE": "8192",
             "SEED": "42",
         }
     },
@@ -79,6 +82,7 @@ SWEEP_EXPERIMENTS = [
             "RUN_ID": "sweep_lr_low",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "MATRIX_LR": "0.02",
             "SEED": "42",
         }
@@ -92,6 +96,7 @@ SWEEP_EXPERIMENTS = [
             "RUN_ID": "sweep_lr_baseline",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "MATRIX_LR": "0.04",
             "SEED": "42",
         }
@@ -106,6 +111,7 @@ SWEEP_EXPERIMENTS = [
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
             "MATRIX_LR": "0.06",
+            "VOCAB_SIZE": "8192",
             "SEED": "42",
         }
     },
@@ -119,6 +125,7 @@ SWEEP_EXPERIMENTS = [
             "RUN_ID": "sweep_mlp_2x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "MLP_MULT": "2",
             "SEED": "42",
         }
@@ -132,6 +139,7 @@ SWEEP_EXPERIMENTS = [
             "RUN_ID": "sweep_mlp_3x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "MLP_MULT": "3",
             "SEED": "42",
         }
@@ -145,6 +153,7 @@ SWEEP_EXPERIMENTS = [
             "RUN_ID": "sweep_mlp_4x",
             "ITERATIONS": "500",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "MLP_MULT": "4",
             "SEED": "42",
         }
@@ -162,6 +171,7 @@ ABLATION_EXPERIMENTS = [
             "RUN_ID": "ablation_baseline",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "NUM_LAYERS": "9",
             "MLP_MULT": "2",
             "SEED": "1337",
@@ -176,6 +186,7 @@ ABLATION_EXPERIMENTS = [
             "RUN_ID": "ablation_10L",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "NUM_LAYERS": "10",
             "MLP_MULT": "2",
             "SEED": "1337",
@@ -191,6 +202,7 @@ ABLATION_EXPERIMENTS = [
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
             "NUM_LAYERS": "11",
+            "VOCAB_SIZE": "8192",
             "MLP_MULT": "2",
             "SEED": "1337",
         }
@@ -204,6 +216,7 @@ ABLATION_EXPERIMENTS = [
             "RUN_ID": "ablation_mlp3x",
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
+            "VOCAB_SIZE": "8192",
             "NUM_LAYERS": "9",
             "MLP_MULT": "3",
             "SEED": "1337",
@@ -219,6 +232,7 @@ ABLATION_EXPERIMENTS = [
             "ITERATIONS": "1000",
             "TRAIN_BATCH_TOKENS": "131072",
             "NUM_LAYERS": "10",
+            "VOCAB_SIZE": "8192",
             "MLP_MULT": "3",
             "SEED": "1337",
         }
@@ -256,14 +270,14 @@ def run_single_experiment(exp_config, experiment_number, total_experiments):
     # IMPORTANT: Do NOT set RANK/WORLD_SIZE/LOCAL_RANK here
     # train_gpt.py auto-detects single-GPU mode when these are absent
     defaults = {
-        "DATA_PATH": "./data/datasets/fineweb10B_sp1024",
-        "TOKENIZER_PATH": "./data/tokenizers/fineweb_1024_bpe.model",
-        "TRAIN_SEQ_LEN": "1024",
+        "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
+        "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
+        "TRAIN_SEQ_LEN": "2048",
         "VAL_LOSS_EVERY": "0",  # Only at end for speed
         "VAL_BATCH_SIZE": config.get("TRAIN_BATCH_TOKENS", "131072"),
         "TRAIN_LOG_EVERY": "50",
         "MAX_WALLCLOCK_SECONDS": "3600",
-        "VOCAB_SIZE": "1024",
+        "VOCAB_SIZE": "8192",
         "MODEL_DIM": "512",
         "NUM_HEADS": "8",
         "NUM_KV_HEADS": "4",
