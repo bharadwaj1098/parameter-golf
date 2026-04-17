@@ -763,10 +763,13 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
     from torch.backends.cuda import enable_cudnn_sdp, enable_flash_sdp, enable_math_sdp, enable_mem_efficient_sdp
 
+    # to support the colab T4 gpu
+    gpu_capability = torch.cuda.get_device_capability(device)
+    has_flash = gpu_capability >= (8, 0)
     enable_cudnn_sdp(False)
-    enable_flash_sdp(True)
-    enable_mem_efficient_sdp(False)
-    enable_math_sdp(False)
+    enable_flash_sdp(has_flash)
+    enable_mem_efficient_sdp(not has_flash)
+    enable_math_sdp(not has_flash)
 
     logfile = None
     if master_process:
