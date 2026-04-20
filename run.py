@@ -1,13 +1,13 @@
 """
 Unified script for Parameter Golf: setup, training, and experiments.
+Default architecture: 10L x 512d, MLP 3x, SP8192.
 
 Usage:
     python run.py setup                                  # Install deps + download data
     python run.py train                                  # Full training (2000 steps)
-    python run.py quick_smoke                            # Smoke test (50 steps)
-    python run.py experiment                             # Custom experiment
-    python run.py sweep                                  # LR + MLP width sweep (500 steps each)
-    python run.py ablation                               # Layer/MLP ablation (1000 steps each)
+    python run.py quick                                  # Smoke test (50 steps)
+    python run.py sweep                                  # LR + WD sweep (500 steps each)
+    python run.py ablation                               # Architecture ablation (1000 steps each)
     python run.py --config my_experiments.json            # Custom config file
 """
 
@@ -34,8 +34,8 @@ DEFAULTS = {
     "MODEL_DIM": "512",
     "NUM_HEADS": "8",
     "NUM_KV_HEADS": "4",
-    "NUM_LAYERS": "9",
-    "MLP_MULT": "2",
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
     "TIE_EMBEDDINGS": "1",
     "TRAIN_LOG_EVERY": "50",
     "MAX_WALLCLOCK_SECONDS": "3600",
@@ -47,7 +47,7 @@ DEFAULTS = {
 # ============================================================================
 
 PRESETS = {
-    "quick_smoke": {
+    "quick": {
         "RUN_ID": "quick_smoke",
         "ITERATIONS": "50",
         "TRAIN_BATCH_TOKENS": "65536",
@@ -63,16 +63,6 @@ PRESETS = {
         "VAL_BATCH_SIZE": "524288",
         "VAL_LOSS_EVERY": "500",
     },
-    "experiment": {
-        "RUN_ID": "experiment",
-        "ITERATIONS": "1000",
-        "TRAIN_BATCH_TOKENS": "262144",
-        "VAL_BATCH_SIZE": "262144",
-        "VAL_LOSS_EVERY": "200",
-        "MAX_WALLCLOCK_SECONDS": "1800",
-        "SEED": "1337",
-        "MLP_MULT": "3",
-    },
 }
 
 # ============================================================================
@@ -80,26 +70,27 @@ PRESETS = {
 # ============================================================================
 
 QUICK_EXPERIMENTS = [
-    {"name": "baseline",   "description": "9L x 512d baseline",  "config": {"RUN_ID": "exp_baseline",   "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536"}},
-    {"name": "wider_mlp",  "description": "9L x 512d, MLP 3x",  "config": {"RUN_ID": "exp_wider_mlp",  "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "MLP_MULT": "3"}},
-    {"name": "more_layers","description": "11L x 512d, MLP 2x",  "config": {"RUN_ID": "exp_more_layers","ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "NUM_LAYERS": "11"}},
+    {"name": "baseline",    "description": "10L x 512d, MLP 3x",   "config": {"RUN_ID": "exp_baseline",    "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536"}},
+    {"name": "dim576",      "description": "10L x 576d, MLP 3x",   "config": {"RUN_ID": "exp_dim576",      "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "MODEL_DIM": "576"}},
+    {"name": "11L",         "description": "11L x 512d, MLP 3x",   "config": {"RUN_ID": "exp_11L",         "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "NUM_LAYERS": "11"}},
 ]
 
 SWEEP_EXPERIMENTS = [
     {"name": "lr_low",      "description": "MATRIX_LR=0.02", "config": {"RUN_ID": "sweep_lr_low",      "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.02"}},
     {"name": "lr_baseline", "description": "MATRIX_LR=0.04", "config": {"RUN_ID": "sweep_lr_baseline", "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.04"}},
     {"name": "lr_high",     "description": "MATRIX_LR=0.06", "config": {"RUN_ID": "sweep_lr_high",     "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.06"}},
-    {"name": "mlp_2x",      "description": "MLP 2x",         "config": {"RUN_ID": "sweep_mlp_2x",      "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MLP_MULT": "2"}},
-    {"name": "mlp_3x",      "description": "MLP 3x",         "config": {"RUN_ID": "sweep_mlp_3x",      "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MLP_MULT": "3"}},
-    {"name": "mlp_4x",      "description": "MLP 4x",         "config": {"RUN_ID": "sweep_mlp_4x",      "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MLP_MULT": "4"}},
+    {"name": "lr_higher",   "description": "MATRIX_LR=0.08", "config": {"RUN_ID": "sweep_lr_higher",   "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.08"}},
+    {"name": "wd_001",      "description": "WEIGHT_DECAY=0.01","config": {"RUN_ID": "sweep_wd_001",    "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "WEIGHT_DECAY": "0.01"}},
+    {"name": "wd_004",      "description": "WEIGHT_DECAY=0.04","config": {"RUN_ID": "sweep_wd_004",    "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "WEIGHT_DECAY": "0.04"}},
 ]
 
 ABLATION_EXPERIMENTS = [
-    {"name": "baseline_9L",      "description": "Baseline 9L",   "config": {"RUN_ID": "ablation_baseline",    "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337"}},
-    {"name": "baseline_10L",     "description": "+1 layer (10L)","config": {"RUN_ID": "ablation_10L",         "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "10"}},
-    {"name": "baseline_11L",     "description": "+2 layers (11L)","config": {"RUN_ID": "ablation_11L",        "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "11"}},
-    {"name": "baseline_9L_mlp3x","description": "9L + MLP 3x",  "config": {"RUN_ID": "ablation_mlp3x",      "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "MLP_MULT": "3"}},
-    {"name": "baseline_10L_mlp3x","description": "10L + MLP 3x","config": {"RUN_ID": "ablation_10L_mlp3x",  "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "10", "MLP_MULT": "3"}},
+    {"name": "baseline",   "description": "10L + MLP 3x (default)",  "config": {"RUN_ID": "ablation_baseline",  "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337"}},
+    {"name": "dim576",     "description": "dim 576",                 "config": {"RUN_ID": "ablation_d576",      "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "MODEL_DIM": "576"}},
+    {"name": "12heads",    "description": "12 heads, 4 KV",          "config": {"RUN_ID": "ablation_h12",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_HEADS": "12", "NUM_KV_HEADS": "4"}},
+    {"name": "seq4096",    "description": "seq_len 4096",            "config": {"RUN_ID": "ablation_s4096",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TRAIN_SEQ_LEN": "4096"}},
+    {"name": "untied_emb", "description": "untied embeddings",       "config": {"RUN_ID": "ablation_notie",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TIE_EMBEDDINGS": "0"}},
+    {"name": "11L",        "description": "11 layers",               "config": {"RUN_ID": "ablation_11L",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "11"}},
 ]
 
 SUITES = {
@@ -120,7 +111,7 @@ def setup():
     subprocess.run(["pip", "install", "-q", "torch", "torchvision", "torchaudio",
                      "--index-url", "https://download.pytorch.org/whl/cu118"], check=True)
     subprocess.run(["pip", "install", "-q", "sentencepiece", "numpy",
-                     "huggingface-hub", "datasets", "tqdm"], check=True)
+                     "huggingface-hub", "datasets", "tqdm", "zstandard"], check=True)
 
     print("\n" + "=" * 60)
     print("SETUP: Downloading SP8192 dataset (80 shards)...")
@@ -308,20 +299,19 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Parameter Golf: setup, train, and run experiments",
+        description="Parameter Golf: setup, train, and run experiments (10L MLP3x default)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
   python run.py setup                    Install deps + download SP8192 data
-  python run.py quick_smoke              Smoke test (50 steps)
+  python run.py quick                    Smoke test (50 steps)
   python run.py train                    Full training (2000 steps)
-  python run.py experiment               Custom experiment (edit PRESETS in run.py)
-  python run.py sweep                    LR + MLP width sweep
-  python run.py ablation                 Layer/MLP ablation study
+  python run.py sweep                    LR + WD sweep
+  python run.py ablation                 Architecture ablation study
   python run.py --config my_exps.json    Run custom experiment config
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "quick_smoke", "quick", "train", "experiment", "sweep", "ablation"],
+                        choices=["setup", "quick", "train", "sweep", "ablation"],
                         help="Run mode or experiment suite")
     parser.add_argument("--config", type=str, help="Path to custom experiment JSON file")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
