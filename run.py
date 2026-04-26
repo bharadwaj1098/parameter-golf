@@ -94,7 +94,7 @@ _ARCH_COMMON = {
     "TRAIN_BATCH_TOKENS": "65536",
     "VAL_BATCH_SIZE": "65536",
     "VAL_LOSS_EVERY": "250",
-    "TRAIN_LOG_EVERY": "50",
+    "TRAIN_LOG_EVERY": "100",
     "MAX_WALLCLOCK_SECONDS": "1800",
     "SEED": "42",
     # Pin architecture shape explicitly so the ablation is self-documenting.
