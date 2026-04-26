@@ -90,10 +90,10 @@ ABLATION_EXPERIMENTS = [
 # 10L baseline: encoder = [0..4], decoder = [5..9]. Middle = layers 4-6.
 # All runs share seed + step count + 10L/MLP3x shape for a clean comparison.
 _ARCH_COMMON = {
-    "ITERATIONS": "500",
+    "ITERATIONS": "1000",
     "TRAIN_BATCH_TOKENS": "65536",
     "VAL_BATCH_SIZE": "65536",
-    "VAL_LOSS_EVERY": "250",
+    "VAL_LOSS_EVERY": "50",
     "TRAIN_LOG_EVERY": "50",
     "MAX_WALLCLOCK_SECONDS": "1800",
     "SEED": "42",
