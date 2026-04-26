@@ -91,11 +91,19 @@ ABLATION_EXPERIMENTS = [
 # All runs share seed + step count + 10L/MLP3x shape for a clean comparison.
 _ARCH_COMMON = {
     "ITERATIONS": "1000",
-    "TRAIN_BATCH_TOKENS": "65536",
-    "VAL_BATCH_SIZE": "65536",
+    # Bigger batch (4x) for more tokens/step, better gradient SNR on short runs.
+    "TRAIN_BATCH_TOKENS": "262144",
+    "VAL_BATCH_SIZE": "262144",
+    # Baseline defaults warmdown=1200, which is > our whole run — LR would never
+    # stay at peak. Shorten to ~15% of training so we get useful learning-rate time.
+    "WARMDOWN_ITERS": "150",
+    "WARMUP_STEPS": "20",
+    # Peak LR bumped ~25% — baseline's 0.04/0.6 are tuned for 20k steps.
+    "MATRIX_LR": "0.05",
+    "EMBED_LR": "0.8",
     "VAL_LOSS_EVERY": "250",
-    "TRAIN_LOG_EVERY": "100",
-    "MAX_WALLCLOCK_SECONDS": "1800",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "3600",
     "SEED": "42",
     # Pin architecture shape explicitly so the ablation is self-documenting.
     "NUM_LAYERS": "10",
@@ -107,31 +115,11 @@ def _arch(name, desc, overrides):
             "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
 
 ARCH_EXPERIMENTS = [
-    # Control
-    # _arch("baseline",       "10L MLP3x, no parallel, no recur",           {}),
-    # Parallel residuals alone (layer position sweep)
-    # _arch("par_l4",         "parallel from layer 4",                      {"PARALLEL_START_LAYER": "4"}),
-    # _arch("par_l5",         "parallel from layer 5 (U-Net hinge)",        {"PARALLEL_START_LAYER": "5"}),
-    # _arch("par_l6",         "parallel from layer 6",                      {"PARALLEL_START_LAYER": "6"}),
-    # _arch("par_l7",         "parallel from layer 7 (11L SOTA-default)",   {"PARALLEL_START_LAYER": "7"}),
-    # Recurrence alone (which middle layers to loop)
-    # _arch("recur_4",        "recur layer 4 only",                         {"RECUR_LAYERS": "4"}),
-    _arch("recur_5",        "recur layer 5 only (hinge)",                 {"RECUR_LAYERS": "5"}),
-    _arch("recur_4_5",      "recur layers 4,5 (hinge pair)",              {"RECUR_LAYERS": "4,5"}),
-    # _arch("recur_5_6",      "recur layers 5,6",                           {"RECUR_LAYERS": "5,6"}),
-    _arch("recur_4_5_6",    "recur layers 4,5,6 (3-layer loop)",          {"RECUR_LAYERS": "4,5,6"}),
-    _arch("recur_5_x2",     "recur layer 5 twice (3x exec total)",        {"RECUR_LAYERS": "5", "RECUR_EXTRA_COUNT": "2"}),
-    # Parallel + recurrence combinations
+    # Single best-candidate run: parallel-from-L5 + recur middle pair.
+    # Combines both techniques at leaderboard sweet spots (U-Net hinge at L4-L5
+    # for a 10L model). Training knobs in _ARCH_COMMON tuned for 1000 steps.
     _arch("par_l5_recur_45",    "parallel L5 + recur 4,5",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
-    _arch("par_l5_recur_56",    "parallel L5 + recur 5,6",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5,6"}),
-    _arch("par_l6_recur_45",    "parallel L6 + recur 4,5",                {"PARALLEL_START_LAYER": "6", "RECUR_LAYERS": "4,5"}),
-    _arch("par_l6_recur_56",    "parallel L6 + recur 5,6",                {"PARALLEL_START_LAYER": "6", "RECUR_LAYERS": "5,6"}),
-    _arch("par_l7_recur_456",   "parallel L7 + recur 4,5,6",              {"PARALLEL_START_LAYER": "7", "RECUR_LAYERS": "4,5,6"}),
-    _arch("par_l7_recur_456",   "parallel L7 + recur 4,5,6",              {"PARALLEL_START_LAYER": "7", "RECUR_LAYERS": "4,5,6", "RECUR_EXTRA_COUNT": "2"}),
-    _arch("par_l4_recur_5",     "parallel L4 + recur 5 (hinge-only)",     {"PARALLEL_START_LAYER": "4", "RECUR_LAYERS": "5"}),
-    _arch("par_l5_recur_5x2",   "parallel L5 + recur 5 twice",            {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5", "RECUR_EXTRA_COUNT": "2"}),
 ]
-
 
 # Smoke test for the new arch code paths (parallel residuals + recurrence).
 # 4 tiny runs (~30-60s each on 1 H100) that exercise all on/off combinations.
