@@ -86,8 +86,14 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
+    # Architecture ablation knobs (added for on-branch experiments)
+    parallel_start_layer = int(os.environ.get("PARALLEL_START_LAYER", -1))
+    _recur_raw = os.environ.get("RECUR_LAYERS", "").strip()
+    recur_layers = tuple(int(x) for x in _recur_raw.split(",") if x.strip())
+    recur_extra_count = int(os.environ.get("RECUR_EXTRA_COUNT", 1))
+
 # -----------------------------
-# MUON OPTIMIZER 
+# MUON OPTIMIZER
 # -----------------------------
 # 
 # As borrowed from modded-nanogpt
@@ -640,12 +646,21 @@ class Block(nn.Module):
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, parallel: bool = False) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x))
-        x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
-        x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
+        if parallel:
+            # GPT-J style: attn and MLP both read from the pre-attn normed input.
+            attn_in = self.attn_norm(x)
+            mlp_in = self.mlp_norm(x)
+            attn_out = self.attn(attn_in)
+            mlp_out = self.mlp(mlp_in)
+            x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
+            x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * mlp_out
+        else:
+            attn_out = self.attn(self.attn_norm(x))
+            x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
+            x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
 
 
@@ -663,6 +678,9 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        parallel_start_layer: int = -1,
+        recur_layers: tuple = (),
+        recur_extra_count: int = 1,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -670,6 +688,9 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+        self.parallel_start_layer = int(parallel_start_layer)
+        self.recur_layers = tuple(int(i) for i in recur_layers)
+        self.recur_extra_count = int(recur_extra_count)
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -706,15 +727,24 @@ class GPT(nn.Module):
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
         skips: list[Tensor] = []
+        recur_set = set(self.recur_layers)
+
+        def _run(phys_i: int, x_in: Tensor) -> Tensor:
+            parallel = self.parallel_start_layer >= 0 and phys_i >= self.parallel_start_layer
+            y = self.blocks[phys_i](x_in, x0, parallel=parallel)
+            if phys_i in recur_set:
+                for _ in range(self.recur_extra_count):
+                    y = self.blocks[phys_i](y, x0, parallel=parallel)
+            return y
 
         # First half stores skips; second half reuses them in reverse order.
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            x = _run(i, x)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x = _run(self.num_encoder_layers + i, x)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -842,6 +872,9 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        parallel_start_layer=args.parallel_start_layer,
+        recur_layers=args.recur_layers,
+        recur_extra_count=args.recur_extra_count,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -915,6 +948,7 @@ def main() -> None:
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
     log0(f"seed:{args.seed}")
+    log0(f"parallel_start_layer:{args.parallel_start_layer} recur_layers:{list(args.recur_layers)} recur_extra_count:{args.recur_extra_count}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP

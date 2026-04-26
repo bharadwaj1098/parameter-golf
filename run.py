@@ -8,6 +8,8 @@ Usage:
     python run.py quick                                  # Smoke test (50 steps)
     python run.py sweep                                  # LR + WD sweep (500 steps each)
     python run.py ablation                               # Architecture ablation (1000 steps each)
+    python run.py arch                                   # Parallel-residual + recurrence ablation (500 steps each, 18 runs)
+    python run.py arch_smoke                             # Smoke-test the arch code paths (4 tiny runs, ~3 min total)
     python run.py --config my_experiments.json            # Custom config file
 """
 
@@ -47,22 +49,6 @@ DEFAULTS = {
 # ============================================================================
 
 PRESETS = {
-    "quick": {
-        "RUN_ID": "quick_smoke",
-        "ITERATIONS": "50",
-        "TRAIN_BATCH_TOKENS": "65536",
-        "VAL_BATCH_SIZE": "65536",
-        "VAL_LOSS_EVERY": "0",
-        "TRAIN_LOG_EVERY": "10",
-        "MAX_WALLCLOCK_SECONDS": "300",
-    },
-    "train": {
-        "RUN_ID": "train_baseline",
-        "ITERATIONS": "2000",
-        "TRAIN_BATCH_TOKENS": "524288",
-        "VAL_BATCH_SIZE": "524288",
-        "VAL_LOSS_EVERY": "500",
-    },
 }
 
 # ============================================================================
@@ -87,15 +73,96 @@ SWEEP_EXPERIMENTS = [
 ABLATION_EXPERIMENTS = [
     {"name": "baseline",   "description": "10L + MLP 3x (default)",  "config": {"RUN_ID": "ablation_baseline",  "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337"}},
     {"name": "dim576",     "description": "dim 576",                 "config": {"RUN_ID": "ablation_d576",      "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "MODEL_DIM": "576"}},
+    {"name": "12heads",    "description": "12 heads, 4 KV",          "config": {"RUN_ID": "ablation_h12",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_HEADS": "12", "NUM_KV_HEADS": "4"}},
     {"name": "seq4096",    "description": "seq_len 4096",            "config": {"RUN_ID": "ablation_s4096",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TRAIN_SEQ_LEN": "4096"}},
     {"name": "untied_emb", "description": "untied embeddings",       "config": {"RUN_ID": "ablation_notie",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TIE_EMBEDDINGS": "0"}},
     {"name": "11L",        "description": "11 layers",               "config": {"RUN_ID": "ablation_11L",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "11"}},
+]
+
+# ============================================================================
+# ARCHITECTURE ABLATION: parallel residuals + depth recurrence
+# ============================================================================
+# Drawn from leaderboard patterns observed in records/track_10min_16mb:
+#   - Parallel residuals typically start layer 5-7 (of 9-11 total)
+#     (msisovic PR #1204, Robby955 PR #1412, 2026-03-31 record)
+#   - Depth recurrence typically repeats the middle U-Net hinge layers
+#     (dexhunter PR #1331/#1437, 2026-04-03 / 2026-04-04 records)
+# 10L baseline: encoder = [0..4], decoder = [5..9]. Middle = layers 4-6.
+# All runs share seed + step count + 10L/MLP3x shape for a clean comparison.
+_ARCH_COMMON = {
+    "ITERATIONS": "500",
+    "TRAIN_BATCH_TOKENS": "65536",
+    "VAL_BATCH_SIZE": "65536",
+    "VAL_LOSS_EVERY": "250",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "1800",
+    "SEED": "42",
+    # Pin architecture shape explicitly so the ablation is self-documenting.
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+}
+
+def _arch(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
+
+ARCH_EXPERIMENTS = [
+    # Control
+    _arch("baseline",       "10L MLP3x, no parallel, no recur",           {}),
+    # Parallel residuals alone (layer position sweep)
+    _arch("par_l4",         "parallel from layer 4",                      {"PARALLEL_START_LAYER": "4"}),
+    _arch("par_l5",         "parallel from layer 5 (U-Net hinge)",        {"PARALLEL_START_LAYER": "5"}),
+    _arch("par_l6",         "parallel from layer 6",                      {"PARALLEL_START_LAYER": "6"}),
+    _arch("par_l7",         "parallel from layer 7 (11L SOTA-default)",   {"PARALLEL_START_LAYER": "7"}),
+    # Recurrence alone (which middle layers to loop)
+    _arch("recur_4",        "recur layer 4 only",                         {"RECUR_LAYERS": "4"}),
+    _arch("recur_5",        "recur layer 5 only (hinge)",                 {"RECUR_LAYERS": "5"}),
+    _arch("recur_4_5",      "recur layers 4,5 (hinge pair)",              {"RECUR_LAYERS": "4,5"}),
+    _arch("recur_5_6",      "recur layers 5,6",                           {"RECUR_LAYERS": "5,6"}),
+    _arch("recur_4_5_6",    "recur layers 4,5,6 (3-layer loop)",          {"RECUR_LAYERS": "4,5,6"}),
+    _arch("recur_5_x2",     "recur layer 5 twice (3x exec total)",        {"RECUR_LAYERS": "5", "RECUR_EXTRA_COUNT": "2"}),
+    # Parallel + recurrence combinations
+    _arch("par_l5_recur_45",    "parallel L5 + recur 4,5",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
+    _arch("par_l5_recur_56",    "parallel L5 + recur 5,6",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5,6"}),
+    _arch("par_l6_recur_45",    "parallel L6 + recur 4,5",                {"PARALLEL_START_LAYER": "6", "RECUR_LAYERS": "4,5"}),
+    _arch("par_l6_recur_56",    "parallel L6 + recur 5,6",                {"PARALLEL_START_LAYER": "6", "RECUR_LAYERS": "5,6"}),
+    _arch("par_l7_recur_456",   "parallel L7 + recur 4,5,6",              {"PARALLEL_START_LAYER": "7", "RECUR_LAYERS": "4,5,6"}),
+    _arch("par_l4_recur_5",     "parallel L4 + recur 5 (hinge-only)",     {"PARALLEL_START_LAYER": "4", "RECUR_LAYERS": "5"}),
+    _arch("par_l5_recur_5x2",   "parallel L5 + recur 5 twice",            {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5", "RECUR_EXTRA_COUNT": "2"}),
+]
+
+# Smoke test for the new arch code paths (parallel residuals + recurrence).
+# 4 tiny runs (~30-60s each on 1 H100) that exercise all on/off combinations.
+# Use this before running `arch` to confirm nothing crashes and BPB is finite.
+_ARCH_SMOKE_COMMON = {
+    "ITERATIONS": "20",
+    "TRAIN_BATCH_TOKENS": "32768",
+    "VAL_BATCH_SIZE": "32768",
+    "VAL_LOSS_EVERY": "0",
+    "TRAIN_LOG_EVERY": "5",
+    "MAX_WALLCLOCK_SECONDS": "300",
+    "SEED": "42",
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+}
+
+def _smoke(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"smoke_{name}", **_ARCH_SMOKE_COMMON, **overrides}}
+
+ARCH_SMOKE_EXPERIMENTS = [
+    _smoke("off",      "neither parallel nor recur",  {}),
+    _smoke("par",      "parallel from layer 5",       {"PARALLEL_START_LAYER": "5"}),
+    _smoke("recur",    "recur layer 5",               {"RECUR_LAYERS": "5"}),
+    _smoke("both",     "parallel L5 + recur 5",       {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5"}),
 ]
 
 SUITES = {
     "quick": QUICK_EXPERIMENTS,
     "sweep": SWEEP_EXPERIMENTS,
     "ablation": ABLATION_EXPERIMENTS,
+    "arch": ARCH_EXPERIMENTS,
+    "arch_smoke": ARCH_SMOKE_EXPERIMENTS,
 }
 
 # ============================================================================
@@ -107,10 +174,17 @@ def setup():
     print("SETUP: Installing dependencies...")
     print("=" * 60)
 
-    subprocess.run(["pip", "install", "-q", "torch", "torchvision", "torchaudio",
-                     "--index-url", "https://download.pytorch.org/whl/cu118"], check=True)
+    subprocess.run(["pip", "install", "-q", "torch==2.8.0", "torchvision", "torchaudio",
+                     "--index-url", "https://download.pytorch.org/whl/cu128"], check=True)
     subprocess.run(["pip", "install", "-q", "sentencepiece", "numpy",
-                     "huggingface-hub", "datasets", "tqdm", "zstandard"], check=True)
+                     "huggingface-hub", "datasets", "tqdm", "zstandard", "brotli"], check=True)
+
+    # FlashAttention 3 (Hopper-only, required by the 04-09 submission)
+    subprocess.run(
+        ["pip", "install", "flash_attn_3", "--no-deps", "--force-reinstall",
+         "--find-links", "https://windreamer.github.io/flash-attention3-wheels/cu128_torch280/"],
+        check=False,
+    )
 
     print("\n" + "=" * 60)
     print("SETUP: Downloading SP8192 dataset (80 shards)...")
@@ -162,6 +236,7 @@ def parse_log(run_id):
     log_file = Path(f"logs/{run_id}.txt")
     val_bpb = None
     val_loss = None
+    submission_bytes = None
     if log_file.exists():
         lines = log_file.read_text().split('\n')
         for line in reversed(lines):
@@ -175,7 +250,13 @@ def parse_log(run_id):
                         except (ValueError, IndexError): pass
                 if val_bpb is not None and val_loss is not None:
                     break
-    return val_bpb, val_loss
+        # "Total submission size ...: NNN bytes" — scan whole file, keep last match
+        for line in lines:
+            if "Total submission size" in line and "bytes" in line:
+                for tok in line.split():
+                    if tok.isdigit():
+                        submission_bytes = int(tok)
+    return val_bpb, val_loss, submission_bytes
 
 # ============================================================================
 # SINGLE RUN
@@ -206,11 +287,12 @@ def run_single(config, label="training"):
         print("Common issues: OOM → reduce TRAIN_BATCH_TOKENS, CUDA error → restart runtime")
         sys.exit(1)
 
-    val_bpb, val_loss = parse_log(run_id)
+    val_bpb, val_loss, submission_bytes = parse_log(run_id)
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE!")
     if val_bpb: print(f"Final BPB: {val_bpb:.4f}")
     if val_loss: print(f"Final Loss: {val_loss:.4f}")
+    if submission_bytes: print(f"Total submission size: {submission_bytes:,} bytes ({submission_bytes/1e6:.2f} MB)")
     print(f"Log: logs/{run_id}.txt")
     print("=" * 80)
 
@@ -253,14 +335,16 @@ def run_experiments(experiments, save_results=True):
             print(f"\nEXPERIMENT FAILED: {name}")
             results.append({"name": name, "description": desc, "config": config,
                             "status": "FAILED", "elapsed_seconds": elapsed,
-                            "val_bpb": None, "val_loss": None})
+                            "val_bpb": None, "val_loss": None, "submission_bytes": None})
         else:
             run_id = config.get("RUN_ID", "unknown")
-            val_bpb, val_loss = parse_log(run_id)
-            print(f"\nCOMPLETE: {name}" + (f" BPB={val_bpb:.4f}" if val_bpb else "") + f" Time={elapsed:.1f}s")
+            val_bpb, val_loss, submission_bytes = parse_log(run_id)
+            size_str = f" Size={submission_bytes/1e6:.2f}MB" if submission_bytes else ""
+            print(f"\nCOMPLETE: {name}" + (f" BPB={val_bpb:.4f}" if val_bpb else "") + size_str + f" Time={elapsed:.1f}s")
             results.append({"name": name, "description": desc, "config": config,
                             "status": "SUCCESS", "elapsed_seconds": elapsed,
-                            "val_bpb": val_bpb, "val_loss": val_loss})
+                            "val_bpb": val_bpb, "val_loss": val_loss,
+                            "submission_bytes": submission_bytes})
 
         if i < total:
             time.sleep(5)
@@ -269,12 +353,13 @@ def run_experiments(experiments, save_results=True):
     print(f"\n\n{'=' * 80}")
     print("EXPERIMENT SUMMARY")
     print("=" * 80)
-    print(f"\n{'Name':<25} {'Status':<10} {'BPB':<10} {'Loss':<10} {'Time (s)':<10}")
-    print("-" * 80)
+    print(f"\n{'Name':<25} {'Status':<10} {'BPB':<10} {'Loss':<10} {'Size (MB)':<12} {'Time (s)':<10}")
+    print("-" * 90)
     for r in results:
         bpb = f"{r['val_bpb']:.4f}" if r['val_bpb'] else "N/A"
         loss = f"{r['val_loss']:.4f}" if r['val_loss'] else "N/A"
-        print(f"{r['name'][:24]:<25} {r['status']:<10} {bpb:<10} {loss:<10} {r['elapsed_seconds']:.1f}")
+        size = f"{r.get('submission_bytes')/1e6:.2f}" if r.get('submission_bytes') else "N/A"
+        print(f"{r['name'][:24]:<25} {r['status']:<10} {bpb:<10} {loss:<10} {size:<12} {r['elapsed_seconds']:.1f}")
 
     successful = [r for r in results if r['val_bpb'] is not None]
     if successful:
@@ -307,10 +392,12 @@ examples:
   python run.py train                    Full training (2000 steps)
   python run.py sweep                    LR + WD sweep
   python run.py ablation                 Architecture ablation study
+  python run.py arch                     Parallel-residual + recurrence ablation (18 runs, 500 steps)
+  python run.py arch_smoke               Smoke-test arch code paths (4 tiny runs, ~3 min total)
   python run.py --config my_exps.json    Run custom experiment config
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "quick", "train", "sweep", "ablation"],
+                        choices=["setup", "quick", "train", "sweep", "ablation", "arch", "arch_smoke"],
                         help="Run mode or experiment suite")
     parser.add_argument("--config", type=str, help="Path to custom experiment JSON file")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
