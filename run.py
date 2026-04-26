@@ -90,18 +90,18 @@ ABLATION_EXPERIMENTS = [
 # 10L baseline: encoder = [0..4], decoder = [5..9]. Middle = layers 4-6.
 # All runs share seed + step count + 10L/MLP3x shape for a clean comparison.
 _ARCH_COMMON = {
-    "ITERATIONS": "1000",
-    # Bigger batch (4x) for more tokens/step, better gradient SNR on short runs.
-    "TRAIN_BATCH_TOKENS": "262144",
-    "VAL_BATCH_SIZE": "262144",
-    # Baseline defaults warmdown=1200, which is > our whole run — LR would never
-    # stay at peak. Shorten to ~15% of training so we get useful learning-rate time.
-    "WARMDOWN_ITERS": "150",
+    # Step 1: 2.5x more iterations + 2x bigger batch.
+    # 2500 × 524K = ~1.3B training tokens (vs. previous 1000 × 262K = 262M).
+    "ITERATIONS": "2500",
+    "TRAIN_BATCH_TOKENS": "524288",
+    "VAL_BATCH_SIZE": "524288",
+    # Warmdown ~16% of total iters so LR cruises at peak for ~80% of training.
+    "WARMDOWN_ITERS": "400",
     "WARMUP_STEPS": "20",
-    # Peak LR bumped ~25% — baseline's 0.04/0.6 are tuned for 20k steps.
+    # Peak LR — unchanged from last run, these worked.
     "MATRIX_LR": "0.05",
     "EMBED_LR": "0.8",
-    "VAL_LOSS_EVERY": "250",
+    "VAL_LOSS_EVERY": "500",
     "TRAIN_LOG_EVERY": "50",
     "MAX_WALLCLOCK_SECONDS": "3600",
     "SEED": "42",
