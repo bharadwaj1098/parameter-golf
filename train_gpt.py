@@ -85,12 +85,18 @@ class Hyperparameters:
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
+    # Decoupled weight decay: applied multiplicatively as p *= (1 - wd*lr) before
+    # the Muon update. Tight weight distribution → more compressible artifact.
+    muon_wd = float(os.environ.get("MUON_WD", 0.0))
 
     # Architecture ablation knobs (added for on-branch experiments)
     parallel_start_layer = int(os.environ.get("PARALLEL_START_LAYER", -1))
     _recur_raw = os.environ.get("RECUR_LAYERS", "").strip()
     recur_layers = tuple(int(x) for x in _recur_raw.split(",") if x.strip())
     recur_extra_count = int(os.environ.get("RECUR_EXTRA_COUNT", 1))
+    # Sliding-window eval: score only the last `eval_stride` tokens of each window,
+    # then slide forward by `eval_stride`. 0 disables (falls back to disjoint chunks).
+    eval_stride = int(os.environ.get("EVAL_STRIDE", 0))
 
 # -----------------------------
 # MUON OPTIMIZER
@@ -116,10 +122,10 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -
 
 
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr: float, momentum: float, backend_steps: int, nesterov: bool = True):
+    def __init__(self, params, lr: float, momentum: float, backend_steps: int, nesterov: bool = True, wd: float = 0.0):
         super().__init__(
             params,
-            dict(lr=lr, momentum=momentum, backend_steps=backend_steps, nesterov=nesterov),
+            dict(lr=lr, momentum=momentum, backend_steps=backend_steps, nesterov=nesterov, wd=wd),
         )
 
     @torch.no_grad()
@@ -141,6 +147,7 @@ class Muon(torch.optim.Optimizer):
             momentum = group["momentum"]
             backend_steps = group["backend_steps"]
             nesterov = group["nesterov"]
+            wd = group.get("wd", 0.0)
 
             total_params = sum(int(p.numel()) for p in params)
             updates_flat = torch.zeros(total_params, device=params[0].device, dtype=torch.bfloat16)
@@ -168,6 +175,10 @@ class Muon(torch.optim.Optimizer):
             curr = 0
             for p in params:
                 g = updates_flat[curr : curr + p.numel()].view_as(p).to(dtype=p.dtype)
+                # Decoupled weight decay: shrink weight before applying update.
+                # Scales with `lr` so decay automatically warmdown-follows LR.
+                if wd > 0.0:
+                    p.mul_(1.0 - lr * wd)
                 p.add_(g, alpha=-lr)
                 curr += p.numel()
 
@@ -233,10 +244,16 @@ def eval_val(
     base_bytes_lut: Tensor,
     has_leading_space_lut: Tensor,
     is_boundary_token_lut: Tensor,
+    use_sliding_window: bool = True,
 ) -> tuple[float, float]:
     # Validation computes two metrics:
     # - val_loss: token cross-entropy (natural log)
     # - val_bpb: tokenizer-agnostic compression metric used by the challenge
+    #
+    # When EVAL_STRIDE > 0 and use_sliding_window, we evaluate in overlapping
+    # windows: feed a full train_seq_len window but only score the last
+    # `eval_stride` positions (which have ~train_seq_len context). Gives a
+    # free ~0.03 BPB vs. disjoint chunks where token 0 has zero context.
     local_batch_tokens = args.val_batch_size // (world_size * grad_accum_steps)
     if local_batch_tokens < args.train_seq_len:
         raise ValueError(
@@ -245,32 +262,93 @@ def eval_val(
             f"GRAD_ACCUM_STEPS={grad_accum_steps}, TRAIN_SEQ_LEN={args.train_seq_len}"
         )
     local_batch_seqs = local_batch_tokens // args.train_seq_len
-    total_seqs = (val_tokens.numel() - 1) // args.train_seq_len
-    seq_start = (total_seqs * rank) // world_size
-    seq_end = (total_seqs * (rank + 1)) // world_size
     val_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
     val_token_count = torch.zeros((), device=device, dtype=torch.float64)
     val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
 
+    seq_len = args.train_seq_len
+    stride = args.eval_stride if use_sliding_window else 0
+    sliding = stride > 0 and stride < seq_len
+
     model.eval()
     with torch.inference_mode():
-        for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
-            batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
-            raw_start = batch_seq_start * args.train_seq_len
-            raw_end = batch_seq_end * args.train_seq_len + 1
-            local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
-            x = local[:-1].reshape(-1, args.train_seq_len)
-            y = local[1:].reshape(-1, args.train_seq_len)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                batch_loss = model(x, y).detach()
-            batch_token_count = float(y.numel())
-            val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
-            val_token_count += batch_token_count
-            prev_ids = x.reshape(-1)
-            tgt_ids = y.reshape(-1)
-            token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
-            token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-            val_byte_count += token_bytes.to(torch.float64).sum()
+        if not sliding:
+            # Disjoint-chunk path (original behavior).
+            total_seqs = (val_tokens.numel() - 1) // seq_len
+            seq_start = (total_seqs * rank) // world_size
+            seq_end = (total_seqs * (rank + 1)) // world_size
+            for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
+                batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
+                raw_start = batch_seq_start * seq_len
+                raw_end = batch_seq_end * seq_len + 1
+                local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
+                x = local[:-1].reshape(-1, seq_len)
+                y = local[1:].reshape(-1, seq_len)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    batch_loss = model(x, y).detach()
+                batch_token_count = float(y.numel())
+                val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
+                val_token_count += batch_token_count
+                prev_ids = x.reshape(-1)
+                tgt_ids = y.reshape(-1)
+                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                val_byte_count += token_bytes.to(torch.float64).sum()
+        else:
+            # Sliding-window path.
+            # Window starts at positions 0, stride, 2*stride, ... Each window is
+            # seq_len+1 tokens (to produce seq_len (x, y) pairs). The FIRST
+            # window scores all seq_len positions (each position has as much
+            # left-context as possible). Every subsequent window scores only
+            # its last `stride` positions (they have seq_len tokens of context).
+            # Result: every val token is scored exactly once, with near-maximal
+            # context (baseline gave token-0 zero context per disjoint chunk).
+            num_val = val_tokens.numel() - 1
+            # Global list of window start positions:
+            starts = list(range(0, num_val - seq_len + 1, stride))
+            # Ensure final tokens are covered: if the last window doesn't reach
+            # num_val, add one final window anchored at the tail.
+            if starts and (starts[-1] + seq_len) < num_val:
+                starts.append(num_val - seq_len)
+            # Shard windows across ranks.
+            my_starts = starts[rank::world_size]
+            # Batch `local_batch_seqs` windows at a time for throughput.
+            for bi in range(0, len(my_starts), local_batch_seqs):
+                chunk_starts = my_starts[bi : bi + local_batch_seqs]
+                x_list, y_list, score_masks = [], [], []
+                for wi, s in enumerate(chunk_starts):
+                    # Each window is the same seq_len positions.
+                    slab = val_tokens[s : s + seq_len + 1].to(device=device, dtype=torch.int64, non_blocking=True)
+                    x_list.append(slab[:-1])
+                    y_list.append(slab[1:])
+                    # Score mask: only last `stride` positions for non-first
+                    # windows (when viewed globally); for the very first
+                    # window across all ranks, score all positions.
+                    mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
+                    is_global_first = (s == 0)
+                    if is_global_first:
+                        mask[:] = True
+                    else:
+                        mask[-stride:] = True
+                    score_masks.append(mask)
+                if not x_list:
+                    continue
+                x = torch.stack(x_list, dim=0)
+                y = torch.stack(y_list, dim=0)
+                mask = torch.stack(score_masks, dim=0)  # [B, seq_len]
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    per_tok = model(x, y, per_token_loss=True).detach()
+                per_tok = per_tok.view(x.size(0), seq_len)
+                m = mask.to(dtype=per_tok.dtype)
+                val_loss_sum += (per_tok * m).to(torch.float64).sum()
+                n_scored = m.sum().item()
+                val_token_count += n_scored
+                # Byte counts for scored tokens only.
+                tgt_ids = y[mask]
+                prev_ids = x[mask]
+                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                val_byte_count += token_bytes.to(torch.float64).sum()
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
@@ -722,7 +800,7 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
 
-    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
+    def forward(self, input_ids: Tensor, target_ids: Tensor, per_token_loss: bool = False) -> Tensor:
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
@@ -755,6 +833,10 @@ class GPT(nn.Module):
                 raise RuntimeError("lm_head is required when tie_embeddings=False")
             logits_proj = self.lm_head(x)
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+        if per_token_loss:
+            # Sliding-window eval path: caller needs per-position loss to select
+            # only the last `eval_stride` tokens per window.
+            return F.cross_entropy(logits.float(), targets, reduction="none")
         return F.cross_entropy(logits.float(), targets, reduction="mean")
 
 
@@ -913,6 +995,7 @@ def main() -> None:
         lr=args.matrix_lr,
         momentum=args.muon_momentum,
         backend_steps=args.muon_backend_steps,
+        wd=args.muon_wd,
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
@@ -949,6 +1032,8 @@ def main() -> None:
     )
     log0(f"seed:{args.seed}")
     log0(f"parallel_start_layer:{args.parallel_start_layer} recur_layers:{list(args.recur_layers)} recur_extra_count:{args.recur_extra_count}")
+    log0(f"eval_stride:{args.eval_stride} sliding_window_eval:{'on' if args.eval_stride > 0 else 'off'}")
+    log0(f"muon_wd:{args.muon_wd}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1029,6 +1114,7 @@ def main() -> None:
                 base_bytes_lut,
                 has_leading_space_lut,
                 is_boundary_token_lut,
+                use_sliding_window=False,  # fast disjoint eval during training
             )
             log0(
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "

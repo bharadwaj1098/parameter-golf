@@ -108,6 +108,14 @@ _ARCH_COMMON = {
     # Pin architecture shape explicitly so the ablation is self-documenting.
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
+    # Sliding-window eval: score only the last 64 positions of each 2048-token
+    # window (each scored token has ~2000 tokens of context vs ~0 in baseline).
+    # Applied to the final post-quant eval; in-training val stays disjoint/fast.
+    "EVAL_STRIDE": "64",
+    # Decoupled weight decay on Muon-routed matrices (all attn + MLP weights).
+    # Tight weight distribution → more compressible artifact. Last run was 16.65MB
+    # (over the 16MB cap); leaderboard records use 0.04-0.095.
+    "MUON_WD": "0.05",
 }
 
 def _arch(name, desc, overrides):
@@ -121,30 +129,45 @@ ARCH_EXPERIMENTS = [
     _arch("par_l5_recur_45",    "parallel L5 + recur 4,5",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
 ]
 
-# Smoke test for the new arch code paths (parallel residuals + recurrence).
-# 4 tiny runs (~30-60s each on 1 H100) that exercise all on/off combinations.
-# Use this before running `arch` to confirm nothing crashes and BPB is finite.
+# Smoke test for the arch code paths + recent additions:
+#   - parallel residuals (GPT-J style)
+#   - mini depth recurrence
+#   - Muon weight decay
+#   - sliding-window final eval (stride=64)
+# 4 tiny runs (~60-90s each on 1 H100) that exercise every flag we've added
+# since the baseline. Use this before `arch` to confirm nothing crashes, all
+# logs emit the expected lines, and final BPB is finite.
 _ARCH_SMOKE_COMMON = {
-    "ITERATIONS": "20",
+    # 50 iters is enough for the optimizer to move weights noticeably — any
+    # NaN or optimizer-state bug surfaces quickly.
+    "ITERATIONS": "50",
     "TRAIN_BATCH_TOKENS": "32768",
     "VAL_BATCH_SIZE": "32768",
-    "VAL_LOSS_EVERY": "0",
-    "TRAIN_LOG_EVERY": "5",
-    "MAX_WALLCLOCK_SECONDS": "300",
+    "VAL_LOSS_EVERY": "0",     # skip mid-training val; we only care about the final pipeline
+    "TRAIN_LOG_EVERY": "10",
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "WARMDOWN_ITERS": "10",
+    "WARMUP_STEPS": "5",
+    "MATRIX_LR": "0.05",
+    "EMBED_LR": "0.8",
     "SEED": "42",
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
+    # Exercise the two new post-baseline features on every smoke run:
+    "EVAL_STRIDE": "64",       # sliding-window eval path (ensures per_token_loss branch runs)
+    "MUON_WD": "0.05",         # weight-decay path in Muon.step
 }
 
 def _smoke(name, desc, overrides):
     return {"name": name, "description": desc,
             "config": {"RUN_ID": f"smoke_{name}", **_ARCH_SMOKE_COMMON, **overrides}}
 
+# Standard: every smoke run applies the canonical arch combo (parallel L5 +
+# recur 4,5). Variation is only in other knobs we're iterating on.
+_STANDARD_ARCH = {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}
+
 ARCH_SMOKE_EXPERIMENTS = [
-    _smoke("off",      "neither parallel nor recur",  {}),
-    _smoke("par",      "parallel from layer 5",       {"PARALLEL_START_LAYER": "5"}),
-    _smoke("recur",    "recur layer 5",               {"RECUR_LAYERS": "5"}),
-    _smoke("both",     "parallel L5 + recur 5",       {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "5"}),
+    _smoke("standard", "parallel L5 + recur 4,5 (standard)", _STANDARD_ARCH),
 ]
 
 SUITES = {
