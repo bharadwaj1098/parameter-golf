@@ -1,16 +1,13 @@
 """
-Unified script for Parameter Golf: setup, training, and experiments.
-Default architecture: 10L x 512d, MLP 3x, SP8192.
+Parameter Golf: setup + architecture experiments.
 
 Usage:
-    python run.py setup                                  # Install deps + download data
-    python run.py train                                  # Full training (2000 steps)
-    python run.py quick                                  # Smoke test (50 steps)
-    python run.py sweep                                  # LR + WD sweep (500 steps each)
-    python run.py ablation                               # Architecture ablation (1000 steps each)
-    python run.py arch                                   # Parallel-residual + recurrence ablation (500 steps each, 18 runs)
-    python run.py arch_smoke                             # Smoke-test the arch code paths (4 tiny runs, ~3 min total)
-    python run.py --config my_experiments.json            # Custom config file
+    python run.py setup        # Install deps + download SP8192 data
+    python run.py arch_smoke   # Tiny pipeline smoke test (~2 min on 1 H100)
+    python run.py arch         # 1×H100 iteration config (~30 min)
+    python run.py arch_multi   # 8×H100 submission-shape config (~10 min)
+
+Standard config: 10L x 512d, MLP 3x, SP8192, parallel L5 + recur layers 4,5.
 """
 
 import os
@@ -45,79 +42,33 @@ DEFAULTS = {
 }
 
 # ============================================================================
-# PRESET CONFIGS
+# ARCHITECTURE EXPERIMENT: parallel residuals + depth recurrence
 # ============================================================================
+# Two suites, same arch combo (parallel L5 + recur layers 4,5), different
+# training budgets:
+#
+#   arch        — 1×H100 iteration config. Fixed iterations, stride=512 eval.
+#   arch_multi  — 8×H100 submission-shape config. Wallclock-governed to 600s,
+#                 stride=64 eval. ITERATIONS is an upper bound never reached;
+#                 training stops when wallclock cap is hit.
 
-PRESETS = {
-}
-
-# ============================================================================
-# EXPERIMENT SUITES
-# ============================================================================
-
-QUICK_EXPERIMENTS = [
-    {"name": "baseline",    "description": "10L x 512d, MLP 3x",   "config": {"RUN_ID": "exp_baseline",    "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536"}},
-    {"name": "dim576",      "description": "10L x 576d, MLP 3x",   "config": {"RUN_ID": "exp_dim576",      "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "MODEL_DIM": "576"}},
-    {"name": "11L",         "description": "11L x 512d, MLP 3x",   "config": {"RUN_ID": "exp_11L",         "ITERATIONS": "50", "TRAIN_BATCH_TOKENS": "65536", "NUM_LAYERS": "11"}},
-]
-
-SWEEP_EXPERIMENTS = [
-    {"name": "lr_low",      "description": "MATRIX_LR=0.02", "config": {"RUN_ID": "sweep_lr_low",      "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.02"}},
-    {"name": "lr_baseline", "description": "MATRIX_LR=0.04", "config": {"RUN_ID": "sweep_lr_baseline", "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.04"}},
-    {"name": "lr_high",     "description": "MATRIX_LR=0.06", "config": {"RUN_ID": "sweep_lr_high",     "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.06"}},
-    {"name": "lr_higher",   "description": "MATRIX_LR=0.08", "config": {"RUN_ID": "sweep_lr_higher",   "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "MATRIX_LR": "0.08"}},
-    {"name": "wd_001",      "description": "WEIGHT_DECAY=0.01","config": {"RUN_ID": "sweep_wd_001",    "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "WEIGHT_DECAY": "0.01"}},
-    {"name": "wd_004",      "description": "WEIGHT_DECAY=0.04","config": {"RUN_ID": "sweep_wd_004",    "ITERATIONS": "500", "TRAIN_BATCH_TOKENS": "131072", "WEIGHT_DECAY": "0.04"}},
-]
-
-ABLATION_EXPERIMENTS = [
-    {"name": "baseline",   "description": "10L + MLP 3x (default)",  "config": {"RUN_ID": "ablation_baseline",  "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337"}},
-    {"name": "dim576",     "description": "dim 576",                 "config": {"RUN_ID": "ablation_d576",      "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "MODEL_DIM": "576"}},
-    {"name": "12heads",    "description": "12 heads, 4 KV",          "config": {"RUN_ID": "ablation_h12",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_HEADS": "12", "NUM_KV_HEADS": "4"}},
-    {"name": "seq4096",    "description": "seq_len 4096",            "config": {"RUN_ID": "ablation_s4096",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TRAIN_SEQ_LEN": "4096"}},
-    {"name": "untied_emb", "description": "untied embeddings",       "config": {"RUN_ID": "ablation_notie",     "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "TIE_EMBEDDINGS": "0"}},
-    {"name": "11L",        "description": "11 layers",               "config": {"RUN_ID": "ablation_11L",       "ITERATIONS": "1000", "TRAIN_BATCH_TOKENS": "131072", "SEED": "1337", "NUM_LAYERS": "11"}},
-]
-
-# ============================================================================
-# ARCHITECTURE ABLATION: parallel residuals + depth recurrence
-# ============================================================================
-# Drawn from leaderboard patterns observed in records/track_10min_16mb:
-#   - Parallel residuals typically start layer 5-7 (of 9-11 total)
-#     (msisovic PR #1204, Robby955 PR #1412, 2026-03-31 record)
-#   - Depth recurrence typically repeats the middle U-Net hinge layers
-#     (dexhunter PR #1331/#1437, 2026-04-03 / 2026-04-04 records)
-# 10L baseline: encoder = [0..4], decoder = [5..9]. Middle = layers 4-6.
-# All runs share seed + step count + 10L/MLP3x shape for a clean comparison.
+# --- 1×H100 (arch) ---------------------------------------------------------
 _ARCH_COMMON = {
-    # Step 1: 2.5x more iterations + 2x bigger batch.
-    # 2500 × 524K = ~1.3B training tokens (vs. previous 1000 × 262K = 262M).
     "ITERATIONS": "2500",
     "TRAIN_BATCH_TOKENS": "524288",
     "VAL_BATCH_SIZE": "524288",
-    # Warmdown ~16% of total iters so LR cruises at peak for ~80% of training.
     "WARMDOWN_ITERS": "400",
     "WARMUP_STEPS": "20",
-    # Peak LR — unchanged from last run, these worked.
     "MATRIX_LR": "0.05",
     "EMBED_LR": "0.8",
     "VAL_LOSS_EVERY": "500",
     "TRAIN_LOG_EVERY": "50",
     "MAX_WALLCLOCK_SECONDS": "3600",
     "SEED": "42",
-    # Pin architecture shape explicitly so the ablation is self-documenting.
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
-    # Sliding-window eval: score only the last `stride` positions of each
-    # 2048-token window. Stride=512 captures ~0.027 of the 0.030 BPB gain vs.
-    # disjoint while taking ~1 min instead of ~7 min on 1 H100. Flip to 64 for
-    # 8×H100 submission runs (cost is negligible at that scale, final 0.003
-    # BPB matters). Applied to final post-quant eval; in-training val stays disjoint.
     "EVAL_STRIDE": "512",
-    # Decoupled weight decay on Muon-routed matrices (all attn + MLP weights).
-    # Tight weight distribution → more compressible artifact. Last run was 16.65MB
-    # (over the 16MB cap); leaderboard records use 0.04-0.095.
-    "MUON_WD": "0.05",
+    "MUON_WD": "0.015",
 }
 
 def _arch(name, desc, overrides):
@@ -125,27 +76,55 @@ def _arch(name, desc, overrides):
             "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
 
 ARCH_EXPERIMENTS = [
-    # Single best-candidate run: parallel-from-L5 + recur middle pair.
-    # Combines both techniques at leaderboard sweet spots (U-Net hinge at L4-L5
-    # for a 10L model). Training knobs in _ARCH_COMMON tuned for 1000 steps.
-    _arch("par_l5_recur_45",    "parallel L5 + recur 4,5",                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
+    _arch("par_l5_recur_45", "parallel L5 + recur 4,5",
+          {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
 ]
 
-# Smoke test for the arch code paths + recent additions:
-#   - parallel residuals (GPT-J style)
+# --- 8×H100 (arch_multi) ---------------------------------------------------
+# Wallclock-governed to 600s (the submission cap). ITERATIONS is a safe upper
+# bound we never hit — training loop stops on wallclock, LR warmdown projects
+# against elapsed time (see lr_mul in train_gpt.py).
+# EVAL_STRIDE=64 for full sliding-window eval; cost is ~1 min on 8 GPUs.
+_ARCH_MULTI_COMMON = {
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "ITERATIONS": "50000",
+    "TRAIN_BATCH_TOKENS": "524288",
+    "VAL_BATCH_SIZE": "524288",
+    "WARMDOWN_ITERS": "400",
+    "WARMUP_STEPS": "20",
+    "MATRIX_LR": "0.05",
+    "EMBED_LR": "0.8",
+    "VAL_LOSS_EVERY": "1000",
+    "TRAIN_LOG_EVERY": "100",
+    "SEED": "42",
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+    "EVAL_STRIDE": "64",
+    "MUON_WD": "0.015",
+}
+
+def _arch_multi(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"multi_{name}", **_ARCH_MULTI_COMMON, **overrides}}
+
+ARCH_MULTI_EXPERIMENTS = [
+    _arch_multi("par_l5_recur_45", "parallel L5 + recur 4,5 (8×H100, 600s cap)",
+                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
+]
+
+# ============================================================================
+# ARCHITECTURE SMOKE TEST
+# ============================================================================
+# Tiny run (~2 min on 1 H100) to verify every code path works:
+#   - parallel residuals
 #   - mini depth recurrence
 #   - Muon weight decay
-#   - sliding-window final eval (stride=64)
-# 4 tiny runs (~60-90s each on 1 H100) that exercise every flag we've added
-# since the baseline. Use this before `arch` to confirm nothing crashes, all
-# logs emit the expected lines, and final BPB is finite.
+#   - sliding-window final eval
 _ARCH_SMOKE_COMMON = {
-    # 50 iters is enough for the optimizer to move weights noticeably — any
-    # NaN or optimizer-state bug surfaces quickly.
     "ITERATIONS": "50",
     "TRAIN_BATCH_TOKENS": "32768",
     "VAL_BATCH_SIZE": "32768",
-    "VAL_LOSS_EVERY": "0",     # skip mid-training val; we only care about the final pipeline
+    "VAL_LOSS_EVERY": "0",
     "TRAIN_LOG_EVERY": "10",
     "MAX_WALLCLOCK_SECONDS": "600",
     "WARMDOWN_ITERS": "10",
@@ -155,28 +134,22 @@ _ARCH_SMOKE_COMMON = {
     "SEED": "42",
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
-    # Exercise the two new post-baseline features on every smoke run:
-    "EVAL_STRIDE": "512",      # sliding-window eval path (ensures per_token_loss branch runs); 512 for 1-GPU speed
-    "MUON_WD": "0.05",         # weight-decay path in Muon.step
+    "EVAL_STRIDE": "512",
+    "MUON_WD": "0.015",
 }
 
 def _smoke(name, desc, overrides):
     return {"name": name, "description": desc,
             "config": {"RUN_ID": f"smoke_{name}", **_ARCH_SMOKE_COMMON, **overrides}}
 
-# Standard: every smoke run applies the canonical arch combo (parallel L5 +
-# recur 4,5). Variation is only in other knobs we're iterating on.
-_STANDARD_ARCH = {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}
-
 ARCH_SMOKE_EXPERIMENTS = [
-    _smoke("standard", "parallel L5 + recur 4,5 (standard)", _STANDARD_ARCH),
+    _smoke("standard", "parallel L5 + recur 4,5 (standard)",
+           {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
 ]
 
 SUITES = {
-    "quick": QUICK_EXPERIMENTS,
-    "sweep": SWEEP_EXPERIMENTS,
-    "ablation": ABLATION_EXPERIMENTS,
     "arch": ARCH_EXPERIMENTS,
+    "arch_multi": ARCH_MULTI_EXPERIMENTS,
     "arch_smoke": ARCH_SMOKE_EXPERIMENTS,
 }
 
@@ -214,7 +187,7 @@ def setup():
     print("\n" + "=" * 60)
     print("SETUP COMPLETE!")
     print("=" * 60)
-    print("\nNext: python run.py quick")
+    print("\nNext: python run.py arch_smoke")
 
 # ============================================================================
 # TRAINING RUNNER
@@ -265,51 +238,12 @@ def parse_log(run_id):
                         except (ValueError, IndexError): pass
                 if val_bpb is not None and val_loss is not None:
                     break
-        # "Total submission size ...: NNN bytes" — scan whole file, keep last match
         for line in lines:
             if "Total submission size" in line and "bytes" in line:
                 for tok in line.split():
                     if tok.isdigit():
                         submission_bytes = int(tok)
     return val_bpb, val_loss, submission_bytes
-
-# ============================================================================
-# SINGLE RUN
-# ============================================================================
-
-def run_single(config, label="training"):
-    check_data()
-    nproc = detect_gpu_count()
-    if nproc == 0:
-        print("ERROR: No GPU detected!")
-        sys.exit(1)
-
-    env = build_env(config)
-    run_id = config.get("RUN_ID", "unknown")
-
-    print("=" * 80)
-    print(f"RUNNING: {label} (torchrun, {nproc} GPU{'s' if nproc > 1 else ''})")
-    print("=" * 80)
-    print("\nConfig overrides:")
-    for key, val in config.items():
-        print(f"  {key}: {val}")
-    print()
-
-    result = run_torchrun(env, nproc)
-
-    if result.returncode != 0:
-        print("\nTRAINING FAILED!")
-        print("Common issues: OOM → reduce TRAIN_BATCH_TOKENS, CUDA error → restart runtime")
-        sys.exit(1)
-
-    val_bpb, val_loss, submission_bytes = parse_log(run_id)
-    print("\n" + "=" * 80)
-    print("TRAINING COMPLETE!")
-    if val_bpb: print(f"Final BPB: {val_bpb:.4f}")
-    if val_loss: print(f"Final Loss: {val_loss:.4f}")
-    if submission_bytes: print(f"Total submission size: {submission_bytes:,} bytes ({submission_bytes/1e6:.2f} MB)")
-    print(f"Log: logs/{run_id}.txt")
-    print("=" * 80)
 
 # ============================================================================
 # MULTI-EXPERIMENT RUNNER
@@ -398,33 +332,21 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Parameter Golf: setup, train, and run experiments (10L MLP3x default)",
+        description="Parameter Golf: setup + architecture experiments",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  python run.py setup                    Install deps + download SP8192 data
-  python run.py quick                    Smoke test (50 steps)
-  python run.py train                    Full training (2000 steps)
-  python run.py sweep                    LR + WD sweep
-  python run.py ablation                 Architecture ablation study
-  python run.py arch                     Parallel-residual + recurrence ablation (18 runs, 500 steps)
-  python run.py arch_smoke               Smoke-test arch code paths (4 tiny runs, ~3 min total)
-  python run.py --config my_exps.json    Run custom experiment config
+  python run.py setup        Install deps + download SP8192 data
+  python run.py arch_smoke   Tiny pipeline smoke test (~2 min on 1 H100)
+  python run.py arch         1×H100 iteration config (~30 min)
+  python run.py arch_multi   8×H100 submission-shape config (~10 min)
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "quick", "train", "sweep", "ablation", "arch", "arch_smoke"],
-                        help="Run mode or experiment suite")
-    parser.add_argument("--config", type=str, help="Path to custom experiment JSON file")
+                        choices=["setup", "arch", "arch_multi", "arch_smoke"],
+                        help="Run mode")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
 
     args = parser.parse_args()
-
-    if args.config:
-        with open(args.config, 'r') as f:
-            experiments = json.load(f)
-        print(f"Loading {len(experiments)} experiments from: {args.config}")
-        run_experiments(experiments, save_results=not args.no_save)
-        return
 
     if args.mode is None:
         parser.print_help()
@@ -432,8 +354,6 @@ examples:
 
     if args.mode == "setup":
         setup()
-    elif args.mode in PRESETS:
-        run_single(PRESETS[args.mode], label=args.mode)
     elif args.mode in SUITES:
         run_experiments(SUITES[args.mode], save_results=not args.no_save)
 
