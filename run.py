@@ -108,10 +108,12 @@ _ARCH_COMMON = {
     # Pin architecture shape explicitly so the ablation is self-documenting.
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
-    # Sliding-window eval: score only the last 64 positions of each 2048-token
-    # window (each scored token has ~2000 tokens of context vs ~0 in baseline).
-    # Applied to the final post-quant eval; in-training val stays disjoint/fast.
-    "EVAL_STRIDE": "64",
+    # Sliding-window eval: score only the last `stride` positions of each
+    # 2048-token window. Stride=512 captures ~0.027 of the 0.030 BPB gain vs.
+    # disjoint while taking ~1 min instead of ~7 min on 1 H100. Flip to 64 for
+    # 8×H100 submission runs (cost is negligible at that scale, final 0.003
+    # BPB matters). Applied to final post-quant eval; in-training val stays disjoint.
+    "EVAL_STRIDE": "512",
     # Decoupled weight decay on Muon-routed matrices (all attn + MLP weights).
     # Tight weight distribution → more compressible artifact. Last run was 16.65MB
     # (over the 16MB cap); leaderboard records use 0.04-0.095.
@@ -154,7 +156,7 @@ _ARCH_SMOKE_COMMON = {
     "NUM_LAYERS": "10",
     "MLP_MULT": "3",
     # Exercise the two new post-baseline features on every smoke run:
-    "EVAL_STRIDE": "64",       # sliding-window eval path (ensures per_token_loss branch runs)
+    "EVAL_STRIDE": "512",      # sliding-window eval path (ensures per_token_loss branch runs); 512 for 1-GPU speed
     "MUON_WD": "0.05",         # weight-decay path in Muon.step
 }
 
