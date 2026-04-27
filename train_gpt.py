@@ -295,60 +295,57 @@ def eval_val(
                 token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
                 val_byte_count += token_bytes.to(torch.float64).sum()
         else:
-            # Sliding-window path.
-            # Window starts at positions 0, stride, 2*stride, ... Each window is
-            # seq_len+1 tokens (to produce seq_len (x, y) pairs). The FIRST
-            # window scores all seq_len positions (each position has as much
-            # left-context as possible). Every subsequent window scores only
-            # its last `stride` positions (they have seq_len tokens of context).
-            # Result: every val token is scored exactly once, with near-maximal
-            # context (baseline gave token-0 zero context per disjoint chunk).
+            # Sliding-window path — matches PR #1 (2026-03-19 SlidingWindowEval).
+            # Walk window starts at 0, stride, 2*stride, ... up to num_val.
+            # Partial tail windows (shorter than seq_len) are kept and scored.
+            # For each window, score positions [s_start : wlen] where:
+            #   s_start = 0           if ws == 0 (first window: score all)
+            #   s_start = wlen-stride otherwise  (score only last `stride` positions)
+            # This guarantees every val position is scored exactly once and no
+            # positions are missed — unlike our previous impl which had a gap
+            # between the last full window and the tail window.
             num_val = val_tokens.numel() - 1
-            # Global list of window start positions:
-            starts = list(range(0, num_val - seq_len + 1, stride))
-            # Ensure final tokens are covered: if the last window doesn't reach
-            # num_val, add one final window anchored at the tail.
-            if starts and (starts[-1] + seq_len) < num_val:
-                starts.append(num_val - seq_len)
-            # Shard windows across ranks.
-            my_starts = starts[rank::world_size]
-            # Batch `local_batch_seqs` windows at a time for throughput.
+            window_starts = [ws for ws in range(0, num_val, stride)
+                             if min(ws + seq_len, num_val) - ws >= 1]
+            # Contiguous rank partition (matches 03-19 reference).
+            total_w = len(window_starts)
+            my_s = (total_w * rank) // world_size
+            my_e = (total_w * (rank + 1)) // world_size
+            my_starts = window_starts[my_s:my_e]
+
             for bi in range(0, len(my_starts), local_batch_seqs):
                 chunk_starts = my_starts[bi : bi + local_batch_seqs]
-                x_list, y_list, score_masks = [], [], []
-                for wi, s in enumerate(chunk_starts):
-                    # Each window is the same seq_len positions.
-                    slab = val_tokens[s : s + seq_len + 1].to(device=device, dtype=torch.int64, non_blocking=True)
-                    x_list.append(slab[:-1])
-                    y_list.append(slab[1:])
-                    # Score mask: only last `stride` positions for non-first
-                    # windows (when viewed globally); for the very first
-                    # window across all ranks, score all positions.
-                    mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
-                    is_global_first = (s == 0)
-                    if is_global_first:
-                        mask[:] = True
-                    else:
-                        mask[-stride:] = True
-                    score_masks.append(mask)
-                if not x_list:
+                bsz = len(chunk_starts)
+                if bsz == 0:
                     continue
-                x = torch.stack(x_list, dim=0)
-                y = torch.stack(y_list, dim=0)
-                mask = torch.stack(score_masks, dim=0)  # [B, seq_len]
+                # Pad-zero batch (short tail windows pad up to seq_len).
+                x = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                y = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                wlens: list[int] = []
+                for i, ws in enumerate(chunk_starts):
+                    end = min(ws + seq_len, num_val)
+                    wlen = end - ws
+                    wlens.append(wlen)
+                    chunk = val_tokens[ws : end + 1].to(device=device, dtype=torch.int64, non_blocking=True)
+                    x[i, :wlen] = chunk[:-1]
+                    y[i, :wlen] = chunk[1:]
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     per_tok = model(x, y, per_token_loss=True).detach()
-                per_tok = per_tok.view(x.size(0), seq_len)
-                m = mask.to(dtype=per_tok.dtype)
-                val_loss_sum += (per_tok * m).to(torch.float64).sum()
-                n_scored = m.sum().item()
-                val_token_count += n_scored
-                # Byte counts for scored tokens only.
-                tgt_ids = y[mask]
-                prev_ids = x[mask]
-                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
-                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-                val_byte_count += token_bytes.to(torch.float64).sum()
+                per_tok = per_tok.view(bsz, seq_len)
+                # Accumulate scored region per window.
+                for i, ws in enumerate(chunk_starts):
+                    wlen = wlens[i]
+                    s_start = 0 if ws == 0 else max(wlen - stride, 0)
+                    if s_start >= wlen:
+                        continue
+                    scored = per_tok[i, s_start:wlen]
+                    val_loss_sum += scored.to(torch.float64).sum()
+                    val_token_count += float(wlen - s_start)
+                    tgt_ids = y[i, s_start:wlen]
+                    prev_ids = x[i, s_start:wlen]
+                    token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                    token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                    val_byte_count += token_bytes.to(torch.float64).sum()
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
@@ -399,6 +396,11 @@ QUANT_INT6_MAX = (1 << (QUANT_INT6_BITS - 1)) - 1  # 31
 QUANT_INT8_MAX = 127
 
 MLP_NAME_PATTERNS = ("mlp.fc", "mlp.proj")
+# Embedding tensors get int8 (more bits than int6) because with SP8192 the token
+# embedding is huge (8192 × 512 = ~4M weights) and embedding lookups have NO
+# later-layer opportunity to compensate rounding error — unlike matrix weights
+# which feed into downstream ops that absorb quantization noise.
+EMBED_NAME_PATTERNS = ("tok_emb.weight", "lm_head.weight")
 
 def tensor_nbytes(t: Tensor) -> int:
     return int(t.numel()) * int(t.element_size())
@@ -461,8 +463,13 @@ def quantize_state_dict_mixed(state_dict: dict[str, Tensor]):
 
         stats["num_float_tensors"] += 1
         is_mlp = any(pattern in name for pattern in MLP_NAME_PATTERNS)
-        qmax = QUANT_INT5_MAX if is_mlp else QUANT_INT6_MAX
-        bits = QUANT_INT5_BITS if is_mlp else QUANT_INT6_BITS
+        is_embed = any(pattern in name for pattern in EMBED_NAME_PATTERNS)
+        if is_embed:
+            qmax, bits = QUANT_INT8_MAX, 8
+        elif is_mlp:
+            qmax, bits = QUANT_INT5_MAX, QUANT_INT5_BITS
+        else:
+            qmax, bits = QUANT_INT6_MAX, QUANT_INT6_BITS
         q, s = quantize_float_tensor(t, qmax=qmax)
         meta: dict[str, object] = {"bits": bits}
         if s.ndim > 0:
@@ -475,7 +482,7 @@ def quantize_state_dict_mixed(state_dict: dict[str, Tensor]):
         stats["quant_payload_bytes"] += tensor_nbytes(q) + tensor_nbytes(s)
 
     obj: dict[str, object] = {
-        "__quant_format__": "mixed_int5_int6_per_row_v1",
+        "__quant_format__": "mixed_int5_int6_int8embed_per_row_v1",
         "quantized": quantized,
         "scales": scales,
         "dtypes": dtypes,
