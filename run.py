@@ -185,13 +185,18 @@ ARCH_EXP_EXPERIMENTS = [
 # (training → quantization → sliding-window eval). ~2 min on 1 H100.
 _ARCH_EXP_SMOKE_COMMON = {
     **_STANDARD,
-    "ITERATIONS": "50",
+    # 500 iters so EMA has meaningful state by end of training.
+    # At decay=0.9965, EMA half-life ≈ 200 steps; at 50 steps EMA is still
+    # ~84% initial random weights, which produces misleading post-swap BPB.
+    # At 500 steps EMA is ~82% trained-weight history — enough to verify
+    # that swap doesn't collapse the model.
+    "ITERATIONS": "500",
     "TRAIN_BATCH_TOKENS": "32768",
     "VAL_BATCH_SIZE": "32768",
-    "VAL_LOSS_EVERY": "0",
-    "TRAIN_LOG_EVERY": "10",
-    "MAX_WALLCLOCK_SECONDS": "600",
-    "WARMDOWN_ITERS": "10",
+    "VAL_LOSS_EVERY": "250",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "900",
+    "WARMDOWN_ITERS": "80",
     "WARMUP_STEPS": "5",
     "EVAL_STRIDE": "512",  # fast final eval on 1 GPU
     # Production attention stack (same as arch_exp)
