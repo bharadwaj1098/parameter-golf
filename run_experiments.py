@@ -1,14 +1,15 @@
 """
-Run multiple experiments sequentially on Google Colab or any single GPU.
-
-This script calls train_gpt.py multiple times with different configs.
-train_gpt.py automatically runs in single-GPU mode when no distributed env vars are set.
+Parameter Golf: setup + architecture experiments.
 
 Usage:
-    !python run_experiments.py --experiments quick      # 3 quick tests (50 steps each)
-    !python run_experiments.py --experiments sweep      # Hyperparameter sweep (500 steps each)
-    !python run_experiments.py --experiments ablation   # Ablation study (1000 steps each)
-    !python run_experiments.py --config my_config.json  # Custom config file
+    python run.py setup        # Install deps + download SP8192 data
+    python run.py arch_smoke   # Tiny pipeline smoke test (~2 min on 1 H100)
+    python run.py arch         # 1×H100 iteration config (~30 min)
+    python run.py arch_multi   # 8×H100 submission-shape config (~10 min)
+    python run.py arch_exp_smoke # Experimental-path smoke test (1 GPU, 50 iters, ~2 min)
+    python run.py arch_exp     # kv4_both 3-seed 8×H100 production sweep (~30 min total)
+
+Standard config: 10L x 512d, MLP 3x, SP8192, parallel L5 + recur layers 4,5.
 """
 
 import os
@@ -20,476 +21,416 @@ from pathlib import Path
 from datetime import datetime
 
 # ============================================================================
-# EXPERIMENT CONFIGURATIONS
+# DEFAULTS
 # ============================================================================
 
-QUICK_EXPERIMENTS = [
-    {
-        "name": "baseline",
-        "description": "9L × 512d baseline",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "exp_baseline",
-            "ITERATIONS": "50",
-            "TRAIN_BATCH_TOKENS": "65536",
-            "NUM_LAYERS": "9",
-            "MLP_MULT": "2",
-            "SEED": "42",
-            "VOCAB_SIZE": "8192",
-        }
-    },
-    {
-        "name": "wider_mlp",
-        "description": "9L × 512d, MLP 3x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "exp_wider_mlp",
-            "ITERATIONS": "50",
-            "TRAIN_BATCH_TOKENS": "65536",
-            "NUM_LAYERS": "9",
-            "MLP_MULT": "3",
-            "VOCAB_SIZE": "8192",
-            "SEED": "42",
-        }
-    },
-    {
-        "name": "more_layers",
-        "description": "11L × 512d, MLP 2x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "exp_more_layers",
-            "ITERATIONS": "50",
-            "TRAIN_BATCH_TOKENS": "65536",
-            "NUM_LAYERS": "11",
-            "MLP_MULT": "2",
-            "VOCAB_SIZE": "8192",
-            "SEED": "42",
-        }
-    },
-]
+DATA_PATH = "./data/datasets/fineweb10B_sp8192"
+TOKENIZER_PATH = "./data/tokenizers/fineweb_8192_bpe.model"
 
-SWEEP_EXPERIMENTS = [
-    # Learning rate sweep
-    {
-        "name": "lr_low",
-        "description": "Lower learning rate",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_lr_low",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "MATRIX_LR": "0.02",
-            "SEED": "42",
-        }
-    },
-    {
-        "name": "lr_baseline",
-        "description": "Baseline learning rate",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_lr_baseline",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "MATRIX_LR": "0.04",
-            "SEED": "42",
-        }
-    },
-    {
-        "name": "lr_high",
-        "description": "Higher learning rate",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_lr_high",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "MATRIX_LR": "0.06",
-            "VOCAB_SIZE": "8192",
-            "SEED": "42",
-        }
-    },
-    # MLP width sweep
-    {
-        "name": "mlp_2x",
-        "description": "MLP 2x (baseline)",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_mlp_2x",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "MLP_MULT": "2",
-            "SEED": "42",
-        }
-    },
-    {
-        "name": "mlp_3x",
-        "description": "MLP 3x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_mlp_3x",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "MLP_MULT": "3",
-            "SEED": "42",
-        }
-    },
-    {
-        "name": "mlp_4x",
-        "description": "MLP 4x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "sweep_mlp_4x",
-            "ITERATIONS": "500",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "MLP_MULT": "4",
-            "SEED": "42",
-        }
-    },
-]
-
-ABLATION_EXPERIMENTS = [
-    # Test one technique at a time
-    {
-        "name": "baseline_9L",
-        "description": "Baseline 9L",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "ablation_baseline",
-            "ITERATIONS": "1000",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "NUM_LAYERS": "9",
-            "MLP_MULT": "2",
-            "SEED": "1337",
-        }
-    },
-    {
-        "name": "baseline_10L",
-        "description": "+1 layer (10L)",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "ablation_10L",
-            "ITERATIONS": "1000",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "NUM_LAYERS": "10",
-            "MLP_MULT": "2",
-            "SEED": "1337",
-        }
-    },
-    {
-        "name": "baseline_11L",
-        "description": "+2 layers (11L)",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "ablation_11L",
-            "ITERATIONS": "1000",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "NUM_LAYERS": "11",
-            "VOCAB_SIZE": "8192",
-            "MLP_MULT": "2",
-            "SEED": "1337",
-        }
-    },
-    {
-        "name": "baseline_9L_mlp3x",
-        "description": "9L + MLP 3x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "ablation_mlp3x",
-            "ITERATIONS": "1000",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "VOCAB_SIZE": "8192",
-            "NUM_LAYERS": "9",
-            "MLP_MULT": "3",
-            "SEED": "1337",
-        }
-    },
-    {
-        "name": "baseline_10L_mlp3x",
-        "description": "10L + MLP 3x",
-        "config": {
-            "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-            "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-            "RUN_ID": "ablation_10L_mlp3x",
-            "ITERATIONS": "1000",
-            "TRAIN_BATCH_TOKENS": "131072",
-            "NUM_LAYERS": "10",
-            "VOCAB_SIZE": "8192",
-            "MLP_MULT": "3",
-            "SEED": "1337",
-        }
-    },
-]
+DEFAULTS = {
+    "DATA_PATH": DATA_PATH,
+    "TOKENIZER_PATH": TOKENIZER_PATH,
+    "VOCAB_SIZE": "8192",
+    "TRAIN_SEQ_LEN": "2048",
+    "MODEL_DIM": "512",
+    "NUM_HEADS": "8",
+    "NUM_KV_HEADS": "4",
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+    "TIE_EMBEDDINGS": "1",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "3600",
+    "SEED": "42",
+}
 
 # ============================================================================
-# EXPERIMENT RUNNER
+# STANDARD CONFIG — matches the 1.1798 BPB, 14.88 MB, 8×H100 600s result.
 # ============================================================================
+# Every suite below inherits this. Only the per-suite dict below overrides the
+# handful of knobs that truly differ by context (wallclock budget, eval stride,
+# iteration counts, logging cadence).
+_STANDARD = {
+    # Architecture
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+    "PARALLEL_START_LAYER": "5",
+    "RECUR_LAYERS": "4,5",
+    # Training
+    "SEED": "42",
+    "TRAIN_BATCH_TOKENS": "524288",
+    "VAL_BATCH_SIZE": "524288",
+    "WARMDOWN_ITERS": "400",
+    "WARMUP_STEPS": "20",
+    "MATRIX_LR": "0.05",
+    "EMBED_LR": "0.8",
+    "MUON_WD": "0.025",
+    # Eval
+    "EVAL_STRIDE": "64",
+}
 
-def load_config_from_file(config_file):
-    """Load experiment configs from JSON file"""
-    with open(config_file, 'r') as f:
-        return json.load(f)
+# --- 8×H100 (arch_multi) — submission-shape, matches 1.1798 reference run ---
+# Wallclock-governed to 600s. ITERATIONS is a safe upper bound we never hit —
+# training stops on wallclock, LR warmdown projects against elapsed time.
+_ARCH_MULTI_COMMON = {
+    **_STANDARD,
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "ITERATIONS": "50000",
+    "VAL_LOSS_EVERY": "1000",
+    "TRAIN_LOG_EVERY": "100",
+}
 
-def run_single_experiment(exp_config, experiment_number, total_experiments):
-    """Run a single training experiment"""
+def _arch_multi(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"multi_{name}", **_ARCH_MULTI_COMMON, **overrides}}
 
-    name = exp_config["name"]
-    desc = exp_config.get("description", "")
-    config = exp_config["config"]
+ARCH_MULTI_EXPERIMENTS = [
+    _arch_multi("par_l5_recur_45", "parallel L5 + recur 4,5 (8×H100, 600s cap)", {}),
+]
 
-    print("\n" + "=" * 80)
-    print(f"EXPERIMENT {experiment_number}/{total_experiments}: {name}")
-    print(f"Description: {desc}")
-    print("=" * 80)
+# --- 1×H100 (arch) — single-GPU iteration config ---------------------------
+# Same model/training knobs as _STANDARD; only wallclock and eval stride differ.
+# Stride 512 keeps eval ~1 min on 1 GPU (vs ~7 min at stride 64) — captures
+# ~90% of the sliding-window BPB gain at 1/8 the cost.
+_ARCH_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "2500",
+    "VAL_LOSS_EVERY": "500",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "3600",
+    "EVAL_STRIDE": "512",
+}
 
-    # Print config
-    print("\nConfiguration:")
-    for key, val in config.items():
-        print(f"  {key}: {val}")
-    print()
+def _arch(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
 
-    # Set default values
-    # IMPORTANT: Do NOT set RANK/WORLD_SIZE/LOCAL_RANK here
-    # train_gpt.py auto-detects single-GPU mode when these are absent
-    defaults = {
-        "DATA_PATH": "./data/datasets/fineweb10B_sp8192",
-        "TOKENIZER_PATH": "./data/tokenizers/fineweb_8192_bpe.model",
-        "TRAIN_SEQ_LEN": "2048",
-        "VAL_LOSS_EVERY": "0",  # Only at end for speed
-        "VAL_BATCH_SIZE": config.get("TRAIN_BATCH_TOKENS", "131072"),
-        "TRAIN_LOG_EVERY": "50",
-        "MAX_WALLCLOCK_SECONDS": "3600",
-        "VOCAB_SIZE": "8192",
-        "MODEL_DIM": "512",
-        "NUM_HEADS": "8",
-        "NUM_KV_HEADS": "4",
-        "TIE_EMBEDDINGS": "1",
-    }
+ARCH_EXPERIMENTS = [
+    _arch("par_l5_recur_45", "parallel L5 + recur 4,5", {}),
+]
 
-    # Merge: defaults, then user config (user config overrides)
-    # Start with clean environment (no inherited RANK/WORLD_SIZE from parent)
-    env = {}
-    essential_keys = [
-        "PATH", "HOME", "USER", "SHELL",
-        "CUDA_VISIBLE_DEVICES", "CUDA_HOME", "LD_LIBRARY_PATH",
-        "PYTHONPATH", "VIRTUAL_ENV", "CONDA_DEFAULT_ENV"
-    ]
-    for key in essential_keys:
-        if key in os.environ:
-            env[key] = os.environ[key]
-    env.update(defaults)
-    env.update(config)
+# --- Smoke test (arch_smoke) — ~2 min on 1 H100 ----------------------------
+# Shortest possible run that exercises every code path: parallel residuals,
+# mini recurrence, Muon WD, sliding-window eval. Final BPB will be bad —
+# this is just to verify nothing crashes before committing to a full run.
+_ARCH_SMOKE_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "50",
+    "TRAIN_BATCH_TOKENS": "32768",   # smaller to fit cold-start wallclock
+    "VAL_BATCH_SIZE": "32768",
+    "VAL_LOSS_EVERY": "0",           # no mid-training eval
+    "TRAIN_LOG_EVERY": "10",
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "WARMDOWN_ITERS": "10",
+    "WARMUP_STEPS": "5",
+    "EVAL_STRIDE": "512",            # fast final eval
+}
 
-    # Record start time
-    start_time = time.time()
+def _smoke(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"smoke_{name}", **_ARCH_SMOKE_COMMON, **overrides}}
 
-    # Run training
-    print(f"Starting training for: {name}")
-    print("-" * 80)
+ARCH_SMOKE_EXPERIMENTS = [
+    _smoke("standard", "parallel L5 + recur 4,5 (standard)", {}),
+]
 
-    result = subprocess.run(
-        ["python3", "train_gpt.py"],
-        env=env,
-        capture_output=False,  # Show output in real-time
-    )
+# --- Experimental (arch_exp) — runs train_gpt_exp.py -----------------------
+# Production config is now the "kv4_both" attention stack:
+#   USE_NEW_ATTENTION=1, NUM_KV_HEADS=4, USE_K_GAIN=1, USE_HEAD_GATE=1
+# Everything inherited from _STANDARD; kv4_both adds the new-attention flags.
+# Shape is 8×H100 submission (600s cap, stride=64). Three seeds for the
+# standard 3-seed submission convention.
+#
+# Prior 8×H100 results on this stack (no EMA):
+#   seed=42   → exp_kv4_both_8xh100         → post-quant BPB 1.16964505
+#   seed=1337 → exp_kv4_both_8xh100_1337    → post-quant BPB 1.17019719
+#   seed=2024 → exp_kv4_both_8xh100_2024    → post-quant BPB 1.16898277
+#   (no-EMA 3-seed mean: 1.16961, std 0.00061)
+# Next sweep adds EMA; RUN_IDs are suffixed "_EMA_<seed>" to avoid clobbering.
+_ARCH_EXP_COMMON = {
+    **_STANDARD,
+    # 8×H100 submission shape
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "ITERATIONS": "50000",       # upper bound; wallclock stops training first
+    "VAL_LOSS_EVERY": "1000",
+    "TRAIN_LOG_EVERY": "100",
+    "EVAL_STRIDE": "64",
+    # Production attention stack (kv4_both)
+    "USE_NEW_ATTENTION": "1",
+    "NUM_KV_HEADS": "4",
+    "USE_K_GAIN": "1",
+    "USE_HEAD_GATE": "1",
+    # EMA of model weights; swapped into base_model before save + final eval.
+    "EMA_DECAY": "0.9965",
+}
 
-    elapsed = time.time() - start_time
-
-    # Check result
-    if result.returncode != 0:
-        print("\n" + "!" * 80)
-        print(f"EXPERIMENT FAILED: {name}")
-        print("!" * 80)
-        return {
-            "name": name,
-            "description": desc,
-            "config": config,
-            "status": "FAILED",
-            "elapsed_seconds": elapsed,
-            "val_bpb": None,
-        }
-
-    # Parse results from log
-    run_id = config.get("RUN_ID", "unknown")
-    log_file = Path(f"logs/{run_id}.txt")
-
-    val_bpb = None
-    val_loss = None
-
-    if log_file.exists():
-        with open(log_file, 'r') as f:
-            log_content = f.read()
-
-            # Find final BPB (look for "final_int8_zlib_roundtrip_exact")
-            # NOTE: The log file contains the source code at the top, so we need to
-            # search for the LAST occurrence (the actual output, not the code)
-            lines = log_content.split('\n')
-            for line in reversed(lines):
-                if "final_int8_zlib_roundtrip_exact" in line:
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if part.startswith("val_bpb:"):
-                            try:
-                                val_bpb = float(part.split(':')[1])
-                            except (ValueError, IndexError):
-                                continue
-                        if part.startswith("val_loss:"):
-                            try:
-                                val_loss = float(part.split(':')[1])
-                            except (ValueError, IndexError):
-                                continue
-                    # Found the line, stop searching
-                    if val_bpb is not None and val_loss is not None:
-                        break
-
-    print("\n" + "=" * 80)
-    print(f"EXPERIMENT COMPLETE: {name}")
-    if val_bpb:
-        print(f"Final BPB: {val_bpb:.4f}")
-    if val_loss:
-        print(f"Final Loss: {val_loss:.4f}")
-    print(f"Time: {elapsed:.1f}s")
-    print("=" * 80)
-
+def _arch_exp(name, desc, overrides):
     return {
         "name": name,
         "description": desc,
-        "config": config,
-        "status": "SUCCESS",
-        "elapsed_seconds": elapsed,
-        "val_bpb": val_bpb,
-        "val_loss": val_loss,
+        "script": "train_gpt_exp.py",
+        "config": {"RUN_ID": f"exp_{name}", **_ARCH_EXP_COMMON, **overrides},
     }
 
+# 3-seed production sweep. RUN_IDs match your existing naming convention so
+# prior seed-42/1337 runs (logs already captured) are not overwritten.
+ARCH_EXP_EXPERIMENTS = [
+    _arch_exp("kv4_both_8xh100_EMA_42",    "kv4_both + EMA, 8×H100, seed 42",   {"SEED": "42"}),
+    _arch_exp("kv4_both_8xh100_EMA_1337",  "kv4_both + EMA, 8×H100, seed 1337", {"SEED": "1337"}),
+    _arch_exp("kv4_both_8xh100_EMA_2024",  "kv4_both + EMA, 8×H100, seed 2024", {"SEED": "2024"}),
+]
+
+# --- arch_exp_smoke — pipeline smoke test for train_gpt_exp.py -------------
+# 1 GPU, 50 iters, small batch. Confirms every code path wires up and the
+# kv4_both attention stack produces a finite BPB through the full pipeline
+# (training → quantization → sliding-window eval). ~2 min on 1 H100.
+_ARCH_EXP_SMOKE_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "50",
+    "TRAIN_BATCH_TOKENS": "32768",
+    "VAL_BATCH_SIZE": "32768",
+    "VAL_LOSS_EVERY": "0",
+    "TRAIN_LOG_EVERY": "10",
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "WARMDOWN_ITERS": "10",
+    "WARMUP_STEPS": "5",
+    "EVAL_STRIDE": "512",  # fast final eval on 1 GPU
+    # Production attention stack (same as arch_exp)
+    "USE_NEW_ATTENTION": "1",
+    "NUM_KV_HEADS": "4",
+    "USE_K_GAIN": "1",
+    "USE_HEAD_GATE": "1",
+    # EMA — exercises allocation, per-step update, and swap paths in smoke.
+    "EMA_DECAY": "0.9965",
+}
+
+def _arch_exp_smoke(name, desc, overrides):
+    return {
+        "name": name,
+        "description": desc,
+        "script": "train_gpt_exp.py",
+        "config": {"RUN_ID": f"smoke_exp_{name}", **_ARCH_EXP_SMOKE_COMMON, **overrides},
+    }
+
+ARCH_EXP_SMOKE_EXPERIMENTS = [
+    _arch_exp_smoke("kv4_both_EMA", "kv4_both + EMA pipeline smoke test", {}),
+]
+
+SUITES = {
+    "arch": ARCH_EXPERIMENTS,
+    "arch_multi": ARCH_MULTI_EXPERIMENTS,
+    "arch_smoke": ARCH_SMOKE_EXPERIMENTS,
+    "arch_exp": ARCH_EXP_EXPERIMENTS,
+    "arch_exp_smoke": ARCH_EXP_SMOKE_EXPERIMENTS,
+}
+
+# ============================================================================
+# SETUP
+# ============================================================================
+
+def setup():
+    print("=" * 60)
+    print("SETUP: Installing dependencies...")
+    print("=" * 60)
+
+    subprocess.run(["pip", "install", "-q", "torch==2.8.0", "torchvision", "torchaudio",
+                     "--index-url", "https://download.pytorch.org/whl/cu128"], check=True)
+    subprocess.run(["pip", "install", "-q", "sentencepiece", "numpy",
+                     "huggingface-hub", "datasets", "tqdm", "zstandard", "brotli"], check=True)
+
+    # FlashAttention 3 (Hopper-only, required by the 04-09 submission)
+    subprocess.run(
+        ["pip", "install", "flash_attn_3", "--no-deps", "--force-reinstall",
+         "--find-links", "https://windreamer.github.io/flash-attention3-wheels/cu128_torch280/"],
+        check=False,
+    )
+
+    print("\n" + "=" * 60)
+    print("SETUP: Downloading SP8192 dataset (80 shards)...")
+    print("=" * 60)
+
+    download_env = os.environ.copy()
+    download_env["MATCHED_FINEWEB_REPO_ID"] = "kevclark/parameter-golf"
+    subprocess.run(["python3", "data/cached_challenge_fineweb.py",
+                     "--variant", "sp8192", "--train-shards", "80"],
+                    env=download_env, check=True)
+
+    print("\n" + "=" * 60)
+    print("SETUP COMPLETE!")
+    print("=" * 60)
+    print("\nNext: python run.py arch_smoke")
+
+# ============================================================================
+# TRAINING RUNNER
+# ============================================================================
+
+def detect_gpu_count():
+    import torch
+    return torch.cuda.device_count() if torch.cuda.is_available() else 0
+
+def check_data():
+    data_dir = Path(DATA_PATH)
+    if not data_dir.exists() or not list(data_dir.glob("*.bin")):
+        print("ERROR: Dataset not found!")
+        print("\nRun setup first: python run.py setup")
+        sys.exit(1)
+
+def build_env(config):
+    env = os.environ.copy()
+    env.update(DEFAULTS)
+    env.update(config)
+    if "VAL_BATCH_SIZE" not in config:
+        env["VAL_BATCH_SIZE"] = config.get("TRAIN_BATCH_TOKENS", DEFAULTS.get("TRAIN_BATCH_TOKENS", "524288"))
+    if "VAL_LOSS_EVERY" not in config:
+        env["VAL_LOSS_EVERY"] = "0"
+    return env
+
+def run_torchrun(env, nproc, script="train_gpt.py"):
+    return subprocess.run(
+        ["torchrun", f"--nproc_per_node={nproc}", script],
+        env=env, capture_output=False,
+    )
+
+def parse_log(run_id):
+    log_file = Path(f"logs/{run_id}.txt")
+    val_bpb = None
+    val_loss = None
+    submission_bytes = None
+    if log_file.exists():
+        lines = log_file.read_text().split('\n')
+        for line in reversed(lines):
+            if line.startswith("final_mixed_zstd_roundtrip"):
+                for part in line.split():
+                    if part.startswith("val_bpb:"):
+                        try: val_bpb = float(part.split(':')[1])
+                        except (ValueError, IndexError): pass
+                    if part.startswith("val_loss:"):
+                        try: val_loss = float(part.split(':')[1])
+                        except (ValueError, IndexError): pass
+                if val_bpb is not None and val_loss is not None:
+                    break
+        for line in lines:
+            if "Total submission size" in line and "bytes" in line:
+                for tok in line.split():
+                    if tok.isdigit():
+                        submission_bytes = int(tok)
+    return val_bpb, val_loss, submission_bytes
+
+# ============================================================================
+# MULTI-EXPERIMENT RUNNER
+# ============================================================================
+
 def run_experiments(experiments, save_results=True):
-    """Run a list of experiments sequentially"""
+    check_data()
+    nproc = detect_gpu_count()
+    if nproc == 0:
+        print("ERROR: No GPU detected!")
+        sys.exit(1)
 
     total = len(experiments)
     results = []
 
     print("\n" + "=" * 80)
-    print(f"RUNNING {total} EXPERIMENTS")
+    print(f"RUNNING {total} EXPERIMENTS (torchrun, {nproc} GPU{'s' if nproc > 1 else ''})")
     print("=" * 80)
 
     for i, exp in enumerate(experiments, 1):
-        result = run_single_experiment(exp, i, total)
-        results.append(result)
+        name = exp["name"]
+        desc = exp.get("description", "")
+        config = exp["config"]
 
-        # Small delay between experiments
+        print(f"\n{'=' * 80}")
+        print(f"EXPERIMENT {i}/{total}: {name}")
+        print(f"Description: {desc}")
+        print("=" * 80)
+        for key, val in config.items():
+            print(f"  {key}: {val}")
+
+        env = build_env(config)
+        # Each experiment can target a specific training script (default: train_gpt.py).
+        script = exp.get("script", "train_gpt.py")
+        start_time = time.time()
+        result = run_torchrun(env, nproc, script=script)
+        elapsed = time.time() - start_time
+
+        if result.returncode != 0:
+            print(f"\nEXPERIMENT FAILED: {name}")
+            results.append({"name": name, "description": desc, "config": config,
+                            "status": "FAILED", "elapsed_seconds": elapsed,
+                            "val_bpb": None, "val_loss": None, "submission_bytes": None})
+        else:
+            run_id = config.get("RUN_ID", "unknown")
+            val_bpb, val_loss, submission_bytes = parse_log(run_id)
+            size_str = f" Size={submission_bytes/1e6:.2f}MB" if submission_bytes else ""
+            print(f"\nCOMPLETE: {name}" + (f" BPB={val_bpb:.4f}" if val_bpb else "") + size_str + f" Time={elapsed:.1f}s")
+            results.append({"name": name, "description": desc, "config": config,
+                            "status": "SUCCESS", "elapsed_seconds": elapsed,
+                            "val_bpb": val_bpb, "val_loss": val_loss,
+                            "submission_bytes": submission_bytes})
+
         if i < total:
-            print("\nWaiting 5 seconds before next experiment...")
             time.sleep(5)
 
-    # Print summary
-    print("\n\n" + "=" * 80)
+    # Summary
+    print(f"\n\n{'=' * 80}")
     print("EXPERIMENT SUMMARY")
     print("=" * 80)
-    print()
-
-    # Table header
-    print(f"{'Name':<25} {'Status':<10} {'BPB':<10} {'Loss':<10} {'Time (s)':<10}")
-    print("-" * 80)
-
+    print(f"\n{'Name':<25} {'Status':<10} {'BPB':<10} {'Loss':<10} {'Size (MB)':<12} {'Time (s)':<10}")
+    print("-" * 90)
     for r in results:
-        name = r["name"][:24]
-        status = r["status"]
         bpb = f"{r['val_bpb']:.4f}" if r['val_bpb'] else "N/A"
         loss = f"{r['val_loss']:.4f}" if r['val_loss'] else "N/A"
-        elapsed = f"{r['elapsed_seconds']:.1f}"
+        size = f"{r.get('submission_bytes')/1e6:.2f}" if r.get('submission_bytes') else "N/A"
+        print(f"{r['name'][:24]:<25} {r['status']:<10} {bpb:<10} {loss:<10} {size:<12} {r['elapsed_seconds']:.1f}")
 
-        print(f"{name:<25} {status:<10} {bpb:<10} {loss:<10} {elapsed:<10}")
-
-    # Find best
     successful = [r for r in results if r['val_bpb'] is not None]
     if successful:
         best = min(successful, key=lambda r: r['val_bpb'])
-        print("\n" + "=" * 80)
-        print("BEST RESULT")
-        print("=" * 80)
-        print(f"Name: {best['name']}")
-        print(f"Description: {best['description']}")
-        print(f"BPB: {best['val_bpb']:.4f}")
+        print(f"\nBEST: {best['name']} BPB={best['val_bpb']:.4f}")
         print(f"Config: {json.dumps(best['config'], indent=2)}")
 
-    # Save results to JSON
     if save_results:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_file = f"experiment_results_{timestamp}.json"
-
+        results_file = f"experiment_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
-
         print(f"\nResults saved to: {results_file}")
 
     return results
 
+# ============================================================================
+# MAIN
+# ============================================================================
+
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run multiple experiments sequentially")
-    parser.add_argument(
-        "--experiments",
-        choices=["quick", "sweep", "ablation"],
-        help="Predefined experiment suite"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        help="Path to custom experiment config JSON file"
-    )
-    parser.add_argument(
-        "--no-save",
-        action="store_true",
-        help="Don't save results to JSON"
-    )
+    parser = argparse.ArgumentParser(
+        description="Parameter Golf: setup + architecture experiments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  python run.py setup        Install deps + download SP8192 data
+  python run.py arch_smoke   Tiny pipeline smoke test (~2 min on 1 H100)
+  python run.py arch         1×H100 iteration config (~30 min)
+  python run.py arch_multi   8×H100 submission-shape config (~10 min)
+  python run.py arch_exp_smoke Experimental-path smoke test (1 GPU, 50 iters, ~2 min)
+  python run.py arch_exp     kv4_both 3-seed 8×H100 production sweep (~30 min total)
+""")
+    parser.add_argument("mode", nargs="?", default=None,
+                        choices=["setup", "arch", "arch_multi", "arch_smoke", "arch_exp", "arch_exp_smoke"],
+                        help="Run mode")
+    parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
 
     args = parser.parse_args()
 
-    # Check if data exists
-    data_dir = Path("data/datasets/fineweb10B_sp1024")
-    if not data_dir.exists() or not list(data_dir.glob("*.bin")):
-        print("ERROR: Dataset not found!")
-        print("\nRun setup first:")
-        print("  !python train_gpt_colab.py --mode setup")
-        sys.exit(1)
-
-    # Load experiments
-    if args.config:
-        print(f"Loading experiments from: {args.config}")
-        experiments = load_config_from_file(args.config)
-    elif args.experiments == "quick":
-        print("Running QUICK experiments (50 steps each)")
-        experiments = QUICK_EXPERIMENTS
-    elif args.experiments == "sweep":
-        print("Running SWEEP experiments (500 steps each)")
-        experiments = SWEEP_EXPERIMENTS
-    elif args.experiments == "ablation":
-        print("Running ABLATION experiments (1000 steps each)")
-        experiments = ABLATION_EXPERIMENTS
-    else:
+    if args.mode is None:
         parser.print_help()
         sys.exit(1)
 
-    # Run experiments
-    results = run_experiments(experiments, save_results=not args.no_save)
+    if args.mode == "setup":
+        setup()
+    elif args.mode in SUITES:
+        run_experiments(SUITES[args.mode], save_results=not args.no_save)
+
 
 if __name__ == "__main__":
     main()
