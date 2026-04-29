@@ -769,14 +769,17 @@ class CausalSelfAttentionNew(nn.Module):
         self.proj = CastedLinear(dim, dim, bias=False)
         self.proj._zero_init = True
 
-        # Attention-control params: tiny cost, good tuning surface.
-        # Params are always allocated so state-dict shapes stay stable across
-        # ablations; the use_* flags decide whether to apply them in forward.
+        # Attention-control params. q_gain / q_norm_scale / k_norm_scale are
+        # always-on in this experimental path. k_gain and head_gate are only
+        # allocated when their flag is set — leaving them unallocated avoids
+        # DDP "unused parameter" errors when the flag is off.
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
-        self.k_gain = nn.Parameter(torch.ones(num_kv_heads, dtype=torch.float32))
         self.q_norm_scale = nn.Parameter(torch.ones(num_heads, dtype=torch.float32))
         self.k_norm_scale = nn.Parameter(torch.ones(num_kv_heads, dtype=torch.float32))
-        self.head_gate = nn.Parameter(torch.ones(num_heads, dtype=torch.float32))
+        if self.use_k_gain:
+            self.k_gain = nn.Parameter(torch.ones(num_kv_heads, dtype=torch.float32))
+        if self.use_head_gate:
+            self.head_gate = nn.Parameter(torch.ones(num_heads, dtype=torch.float32))
 
         self.rotary = Rotary(self.head_dim, base=rope_base)
 

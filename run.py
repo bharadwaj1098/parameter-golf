@@ -159,11 +159,18 @@ def _arch_exp(name, desc, overrides):
 # CausalSelfAttentionNew path is exercised; USE_K_GAIN / USE_HEAD_GATE /
 # NUM_KV_HEADS are the three knobs being swept. The first row is the baseline
 # reference (USE_NEW_ATTENTION=0 — original attention class).
+#
+# Runs 1, 7, 9 (baseline_kv4, kv4_both, kv2_both) already completed — commented
+# out so re-running `python run.py arch_exp` executes only the remaining 6.
+# Completed results (post-quant BPB, step 2500):
+#   baseline_kv4: 1.26969528
+#   kv4_both:     1.26320724
+#   kv2_both:     1.26880768
 ARCH_EXP_EXPERIMENTS = [
     # Control
-    _arch_exp("baseline_kv4",     "baseline attn, kv=4",
-              {"USE_NEW_ATTENTION": "0", "NUM_KV_HEADS": "4",
-               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
+    # _arch_exp("baseline_kv4",     "baseline attn, kv=4",  # DONE: 1.26969528
+    #           {"USE_NEW_ATTENTION": "0", "NUM_KV_HEADS": "4",
+    #            "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
     # New-attention baseline (no feature flags) — isolates cost of always-on
     # q_norm_scale/k_norm_scale vs. the baseline class.
     _arch_exp("new_attn_kv4",     "new attn, kv=4, no extras",
@@ -183,16 +190,16 @@ ARCH_EXP_EXPERIMENTS = [
     _arch_exp("kv4_headgate",     "kv=4 + head_gate",
               {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
                "USE_K_GAIN": "0", "USE_HEAD_GATE": "1"}),
-    _arch_exp("kv4_both",         "kv=4 + k_gain + head_gate",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
-               "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
+    # _arch_exp("kv4_both",         "kv=4 + k_gain + head_gate",  # DONE: 1.26320724
+    #           {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
+    #            "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
     # Best-combo candidates
     _arch_exp("kv2_kgain",        "kv=2 + k_gain",
               {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
                "USE_K_GAIN": "1", "USE_HEAD_GATE": "0"}),
-    _arch_exp("kv2_both",         "kv=2 + k_gain + head_gate",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
-               "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
+    # _arch_exp("kv2_both",         "kv=2 + k_gain + head_gate",  # DONE: 1.26880768
+    #           {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
+    #            "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
 ]
 
 SUITES = {
