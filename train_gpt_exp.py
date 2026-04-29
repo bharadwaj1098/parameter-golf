@@ -1261,11 +1261,15 @@ def main() -> None:
     ema_enabled = args.ema_decay > 0.0
     ema_state: dict[str, Tensor] = {}
     if ema_enabled:
+        # Keep EMA state in fp32. bf16 EMA update (mul_(decay) with decay=0.9965,
+        # then add_(p, alpha=0.0035)) silently truncates small magnitudes to zero
+        # over thousands of steps → hollowed-out model at swap time. fp32 costs
+        # ~100 MB extra but preserves precision.
         with torch.no_grad():
             for name, p in base_model.named_parameters():
                 if p.is_floating_point():
-                    ema_state[name] = p.detach().clone()
-        log0(f"ema: initialized {len(ema_state)} tensors, decay={args.ema_decay}")
+                    ema_state[name] = p.detach().to(dtype=torch.float32).clone()
+        log0(f"ema: initialized {len(ema_state)} tensors (fp32), decay={args.ema_decay}")
 
     # -----------------------------
     # MAIN TRAINING LOOP
@@ -1342,6 +1346,8 @@ def main() -> None:
         zero_grad_all()
 
         # EMA update (post-optimizer, excludes warmup which runs in a separate loop above).
+        # ema_buf is fp32; upcast p to fp32 for the add so bf16 truncation doesn't
+        # eat small-magnitude params over thousands of 0.9965 multiplications.
         if ema_enabled:
             with torch.no_grad():
                 decay = args.ema_decay
@@ -1349,7 +1355,7 @@ def main() -> None:
                 for name, p in base_model.named_parameters():
                     ema_buf = ema_state.get(name)
                     if ema_buf is not None:
-                        ema_buf.mul_(decay).add_(p.detach(), alpha=one_minus)
+                        ema_buf.mul_(decay).add_(p.detach().to(dtype=torch.float32), alpha=one_minus)
 
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
@@ -1387,7 +1393,8 @@ def main() -> None:
             for name, p in base_model.named_parameters():
                 ema_buf = ema_state.get(name)
                 if ema_buf is not None:
-                    p.data.copy_(ema_buf)
+                    # ema_buf is fp32; cast to the live param's dtype on copy.
+                    p.data.copy_(ema_buf.to(dtype=p.dtype))
                     n_swapped += 1
                     n_elems += ema_buf.numel()
         log0(f"ema: swapped live → EMA weights ({n_swapped} params, {n_elems} elements)")
