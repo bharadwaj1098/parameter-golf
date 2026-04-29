@@ -6,6 +6,7 @@ Usage:
     python run.py arch_smoke   # Tiny pipeline smoke test (~2 min on 1 H100)
     python run.py arch         # 1×H100 iteration config (~30 min)
     python run.py arch_multi   # 8×H100 submission-shape config (~10 min)
+    python run.py arch_exp     # Attention-mechanism ablation grid (9 runs × 2500 steps, 1×H100, disjoint eval)
 
 Standard config: 10L x 512d, MLP 3x, SP8192, parallel L5 + recur layers 4,5.
 """
@@ -42,65 +43,39 @@ DEFAULTS = {
 }
 
 # ============================================================================
-# ARCHITECTURE EXPERIMENT: parallel residuals + depth recurrence
+# STANDARD CONFIG — matches the 1.1798 BPB, 14.88 MB, 8×H100 600s result.
 # ============================================================================
-# Two suites, same arch combo (parallel L5 + recur layers 4,5), different
-# training budgets:
-#
-#   arch        — 1×H100 iteration config. Fixed iterations, stride=512 eval.
-#   arch_multi  — 8×H100 submission-shape config. Wallclock-governed to 600s,
-#                 stride=64 eval. ITERATIONS is an upper bound never reached;
-#                 training stops when wallclock cap is hit.
-
-# --- 1×H100 (arch) ---------------------------------------------------------
-_ARCH_COMMON = {
-    "ITERATIONS": "2500",
+# Every suite below inherits this. Only the per-suite dict below overrides the
+# handful of knobs that truly differ by context (wallclock budget, eval stride,
+# iteration counts, logging cadence).
+_STANDARD = {
+    # Architecture
+    "NUM_LAYERS": "10",
+    "MLP_MULT": "3",
+    "PARALLEL_START_LAYER": "5",
+    "RECUR_LAYERS": "4,5",
+    # Training
+    "SEED": "42",
     "TRAIN_BATCH_TOKENS": "524288",
     "VAL_BATCH_SIZE": "524288",
     "WARMDOWN_ITERS": "400",
     "WARMUP_STEPS": "20",
     "MATRIX_LR": "0.05",
     "EMBED_LR": "0.8",
-    "VAL_LOSS_EVERY": "500",
-    "TRAIN_LOG_EVERY": "50",
-    "MAX_WALLCLOCK_SECONDS": "3600",
-    "SEED": "42",
-    "NUM_LAYERS": "10",
-    "MLP_MULT": "3",
-    "EVAL_STRIDE": "512",
-    "MUON_WD": "0.015",
+    "MUON_WD": "0.025",
+    # Eval
+    "EVAL_STRIDE": "64",
 }
 
-def _arch(name, desc, overrides):
-    return {"name": name, "description": desc,
-            "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
-
-ARCH_EXPERIMENTS = [
-    _arch("par_l5_recur_45", "parallel L5 + recur 4,5",
-          {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
-]
-
-# --- 8×H100 (arch_multi) ---------------------------------------------------
-# Wallclock-governed to 600s (the submission cap). ITERATIONS is a safe upper
-# bound we never hit — training loop stops on wallclock, LR warmdown projects
-# against elapsed time (see lr_mul in train_gpt.py).
-# EVAL_STRIDE=64 for full sliding-window eval; cost is ~1 min on 8 GPUs.
+# --- 8×H100 (arch_multi) — submission-shape, matches 1.1798 reference run ---
+# Wallclock-governed to 600s. ITERATIONS is a safe upper bound we never hit —
+# training stops on wallclock, LR warmdown projects against elapsed time.
 _ARCH_MULTI_COMMON = {
+    **_STANDARD,
     "MAX_WALLCLOCK_SECONDS": "600",
     "ITERATIONS": "50000",
-    "TRAIN_BATCH_TOKENS": "524288",
-    "VAL_BATCH_SIZE": "524288",
-    "WARMDOWN_ITERS": "400",
-    "WARMUP_STEPS": "20",
-    "MATRIX_LR": "0.05",
-    "EMBED_LR": "0.8",
     "VAL_LOSS_EVERY": "1000",
     "TRAIN_LOG_EVERY": "100",
-    "SEED": "42",
-    "NUM_LAYERS": "10",
-    "MLP_MULT": "3",
-    "EVAL_STRIDE": "64",
-    "MUON_WD": "0.015",
 }
 
 def _arch_multi(name, desc, overrides):
@@ -108,34 +83,45 @@ def _arch_multi(name, desc, overrides):
             "config": {"RUN_ID": f"multi_{name}", **_ARCH_MULTI_COMMON, **overrides}}
 
 ARCH_MULTI_EXPERIMENTS = [
-    _arch_multi("par_l5_recur_45", "parallel L5 + recur 4,5 (8×H100, 600s cap)",
-                {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
+    _arch_multi("par_l5_recur_45", "parallel L5 + recur 4,5 (8×H100, 600s cap)", {}),
 ]
 
-# ============================================================================
-# ARCHITECTURE SMOKE TEST
-# ============================================================================
-# Tiny run (~2 min on 1 H100) to verify every code path works:
-#   - parallel residuals
-#   - mini depth recurrence
-#   - Muon weight decay
-#   - sliding-window final eval
+# --- 1×H100 (arch) — single-GPU iteration config ---------------------------
+# Same model/training knobs as _STANDARD; only wallclock and eval stride differ.
+# Stride 512 keeps eval ~1 min on 1 GPU (vs ~7 min at stride 64) — captures
+# ~90% of the sliding-window BPB gain at 1/8 the cost.
+_ARCH_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "2500",
+    "VAL_LOSS_EVERY": "500",
+    "TRAIN_LOG_EVERY": "50",
+    "MAX_WALLCLOCK_SECONDS": "3600",
+    "EVAL_STRIDE": "512",
+}
+
+def _arch(name, desc, overrides):
+    return {"name": name, "description": desc,
+            "config": {"RUN_ID": f"arch_{name}", **_ARCH_COMMON, **overrides}}
+
+ARCH_EXPERIMENTS = [
+    _arch("par_l5_recur_45", "parallel L5 + recur 4,5", {}),
+]
+
+# --- Smoke test (arch_smoke) — ~2 min on 1 H100 ----------------------------
+# Shortest possible run that exercises every code path: parallel residuals,
+# mini recurrence, Muon WD, sliding-window eval. Final BPB will be bad —
+# this is just to verify nothing crashes before committing to a full run.
 _ARCH_SMOKE_COMMON = {
+    **_STANDARD,
     "ITERATIONS": "50",
-    "TRAIN_BATCH_TOKENS": "32768",
+    "TRAIN_BATCH_TOKENS": "32768",   # smaller to fit cold-start wallclock
     "VAL_BATCH_SIZE": "32768",
-    "VAL_LOSS_EVERY": "0",
+    "VAL_LOSS_EVERY": "0",           # no mid-training eval
     "TRAIN_LOG_EVERY": "10",
     "MAX_WALLCLOCK_SECONDS": "600",
     "WARMDOWN_ITERS": "10",
     "WARMUP_STEPS": "5",
-    "MATRIX_LR": "0.05",
-    "EMBED_LR": "0.8",
-    "SEED": "42",
-    "NUM_LAYERS": "10",
-    "MLP_MULT": "3",
-    "EVAL_STRIDE": "512",
-    "MUON_WD": "0.015",
+    "EVAL_STRIDE": "512",            # fast final eval
 }
 
 def _smoke(name, desc, overrides):
@@ -143,14 +129,77 @@ def _smoke(name, desc, overrides):
             "config": {"RUN_ID": f"smoke_{name}", **_ARCH_SMOKE_COMMON, **overrides}}
 
 ARCH_SMOKE_EXPERIMENTS = [
-    _smoke("standard", "parallel L5 + recur 4,5 (standard)",
-           {"PARALLEL_START_LAYER": "5", "RECUR_LAYERS": "4,5"}),
+    _smoke("standard", "parallel L5 + recur 4,5 (standard)", {}),
+]
+
+# --- Experimental (arch_exp) — runs train_gpt_exp.py -----------------------
+# Attention-mechanism ablation study. All runs share: 10L MLP3×, parallel L5,
+# recur 4,5, WD 0.025, MATRIX_LR 0.05 (from _STANDARD). Fixed 2500 steps on
+# 1×H100 — same step budget across runs keeps comparisons clean regardless of
+# GPU-speed variability. Disjoint eval (EVAL_STRIDE=0) for fast iteration;
+# if a variant beats baseline on disjoint, it'll beat on stride=64 too.
+_ARCH_EXP_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "2500",
+    "MAX_WALLCLOCK_SECONDS": "3600",  # safety cap only; 2500 steps fits easily
+    "VAL_LOSS_EVERY": "500",
+    "TRAIN_LOG_EVERY": "50",
+    "EVAL_STRIDE": "0",          # disjoint eval for fast iteration
+}
+
+def _arch_exp(name, desc, overrides):
+    return {
+        "name": name,
+        "description": desc,
+        "script": "train_gpt_exp.py",
+        "config": {"RUN_ID": f"exp_{name}", **_ARCH_EXP_COMMON, **overrides},
+    }
+
+# Attention-only ablation grid. Every run sets USE_NEW_ATTENTION=1 so the
+# CausalSelfAttentionNew path is exercised; USE_K_GAIN / USE_HEAD_GATE /
+# NUM_KV_HEADS are the three knobs being swept. The first row is the baseline
+# reference (USE_NEW_ATTENTION=0 — original attention class).
+ARCH_EXP_EXPERIMENTS = [
+    # Control
+    _arch_exp("baseline_kv4",     "baseline attn, kv=4",
+              {"USE_NEW_ATTENTION": "0", "NUM_KV_HEADS": "4",
+               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
+    # New-attention baseline (no feature flags) — isolates cost of always-on
+    # q_norm_scale/k_norm_scale vs. the baseline class.
+    _arch_exp("new_attn_kv4",     "new attn, kv=4, no extras",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
+               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
+    # KV-head sweep
+    _arch_exp("new_attn_kv2",     "new attn, kv=2",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
+               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
+    _arch_exp("new_attn_kv1",     "new attn, kv=1 (MQA)",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "1",
+               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
+    # Feature ablations at kv=4
+    _arch_exp("kv4_kgain",        "kv=4 + k_gain",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
+               "USE_K_GAIN": "1", "USE_HEAD_GATE": "0"}),
+    _arch_exp("kv4_headgate",     "kv=4 + head_gate",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
+               "USE_K_GAIN": "0", "USE_HEAD_GATE": "1"}),
+    _arch_exp("kv4_both",         "kv=4 + k_gain + head_gate",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
+               "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
+    # Best-combo candidates
+    _arch_exp("kv2_kgain",        "kv=2 + k_gain",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
+               "USE_K_GAIN": "1", "USE_HEAD_GATE": "0"}),
+    _arch_exp("kv2_both",         "kv=2 + k_gain + head_gate",
+              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
+               "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
 ]
 
 SUITES = {
     "arch": ARCH_EXPERIMENTS,
     "arch_multi": ARCH_MULTI_EXPERIMENTS,
     "arch_smoke": ARCH_SMOKE_EXPERIMENTS,
+    "arch_exp": ARCH_EXP_EXPERIMENTS,
 }
 
 # ============================================================================
@@ -214,9 +263,9 @@ def build_env(config):
         env["VAL_LOSS_EVERY"] = "0"
     return env
 
-def run_torchrun(env, nproc):
+def run_torchrun(env, nproc, script="train_gpt.py"):
     return subprocess.run(
-        ["torchrun", f"--nproc_per_node={nproc}", "train_gpt.py"],
+        ["torchrun", f"--nproc_per_node={nproc}", script],
         env=env, capture_output=False,
     )
 
@@ -228,7 +277,7 @@ def parse_log(run_id):
     if log_file.exists():
         lines = log_file.read_text().split('\n')
         for line in reversed(lines):
-            if "final_int8_zlib_roundtrip_exact" in line:
+            if line.startswith("final_mixed_zstd_roundtrip"):
                 for part in line.split():
                     if part.startswith("val_bpb:"):
                         try: val_bpb = float(part.split(':')[1])
@@ -276,8 +325,10 @@ def run_experiments(experiments, save_results=True):
             print(f"  {key}: {val}")
 
         env = build_env(config)
+        # Each experiment can target a specific training script (default: train_gpt.py).
+        script = exp.get("script", "train_gpt.py")
         start_time = time.time()
-        result = run_torchrun(env, nproc)
+        result = run_torchrun(env, nproc, script=script)
         elapsed = time.time() - start_time
 
         if result.returncode != 0:
@@ -340,9 +391,10 @@ examples:
   python run.py arch_smoke   Tiny pipeline smoke test (~2 min on 1 H100)
   python run.py arch         1×H100 iteration config (~30 min)
   python run.py arch_multi   8×H100 submission-shape config (~10 min)
+  python run.py arch_exp     Attention-mechanism ablation grid (9 runs × 2500 steps, 1×H100, disjoint eval)
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "arch", "arch_multi", "arch_smoke"],
+                        choices=["setup", "arch", "arch_multi", "arch_smoke", "arch_exp"],
                         help="Run mode")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
 
