@@ -6,7 +6,8 @@ Usage:
     python run.py arch_smoke   # Tiny pipeline smoke test (~2 min on 1 H100)
     python run.py arch         # 1×H100 iteration config (~30 min)
     python run.py arch_multi   # 8×H100 submission-shape config (~10 min)
-    python run.py arch_exp     # Attention-mechanism ablation grid (9 runs × 2500 steps, 1×H100, disjoint eval)
+    python run.py arch_exp_smoke # Experimental-path smoke test (1 GPU, 50 iters, ~2 min)
+    python run.py arch_exp     # kv4_both 3-seed 8×H100 production sweep (~30 min total)
 
 Standard config: 10L x 512d, MLP 3x, SP8192, parallel L5 + recur layers 4,5.
 """
@@ -133,18 +134,33 @@ ARCH_SMOKE_EXPERIMENTS = [
 ]
 
 # --- Experimental (arch_exp) — runs train_gpt_exp.py -----------------------
-# Attention-mechanism ablation study. All runs share: 10L MLP3×, parallel L5,
-# recur 4,5, WD 0.025, MATRIX_LR 0.05 (from _STANDARD). Fixed 2500 steps on
-# 1×H100 — same step budget across runs keeps comparisons clean regardless of
-# GPU-speed variability. Disjoint eval (EVAL_STRIDE=0) for fast iteration;
-# if a variant beats baseline on disjoint, it'll beat on stride=64 too.
+# Production config is now the "kv4_both" attention stack:
+#   USE_NEW_ATTENTION=1, NUM_KV_HEADS=4, USE_K_GAIN=1, USE_HEAD_GATE=1
+# Everything inherited from _STANDARD; kv4_both adds the new-attention flags.
+# Shape is 8×H100 submission (600s cap, stride=64). Three seeds for the
+# standard 3-seed submission convention.
+#
+# Prior 8×H100 results on this stack (no EMA):
+#   seed=42   → exp_kv4_both_8xh100         → post-quant BPB 1.16964505
+#   seed=1337 → exp_kv4_both_8xh100_1337    → post-quant BPB 1.17019719
+#   seed=2024 → exp_kv4_both_8xh100_2024    → post-quant BPB 1.16898277
+#   (no-EMA 3-seed mean: 1.16961, std 0.00061)
+# Next sweep adds EMA; RUN_IDs are suffixed "_EMA_<seed>" to avoid clobbering.
 _ARCH_EXP_COMMON = {
     **_STANDARD,
-    "ITERATIONS": "2500",
-    "MAX_WALLCLOCK_SECONDS": "3600",  # safety cap only; 2500 steps fits easily
-    "VAL_LOSS_EVERY": "500",
-    "TRAIN_LOG_EVERY": "50",
-    "EVAL_STRIDE": "0",          # disjoint eval for fast iteration
+    # 8×H100 submission shape
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "ITERATIONS": "50000",       # upper bound; wallclock stops training first
+    "VAL_LOSS_EVERY": "1000",
+    "TRAIN_LOG_EVERY": "100",
+    "EVAL_STRIDE": "64",
+    # Production attention stack (kv4_both)
+    "USE_NEW_ATTENTION": "1",
+    "NUM_KV_HEADS": "4",
+    "USE_K_GAIN": "1",
+    "USE_HEAD_GATE": "1",
+    # EMA of model weights; swapped into base_model before save + final eval.
+    "EMA_DECAY": "0.9965",
 }
 
 def _arch_exp(name, desc, overrides):
@@ -155,51 +171,48 @@ def _arch_exp(name, desc, overrides):
         "config": {"RUN_ID": f"exp_{name}", **_ARCH_EXP_COMMON, **overrides},
     }
 
-# Attention-only ablation grid. Every run sets USE_NEW_ATTENTION=1 so the
-# CausalSelfAttentionNew path is exercised; USE_K_GAIN / USE_HEAD_GATE /
-# NUM_KV_HEADS are the three knobs being swept. The first row is the baseline
-# reference (USE_NEW_ATTENTION=0 — original attention class).
-#
-# Runs 1, 7, 9 (baseline_kv4, kv4_both, kv2_both) already completed — commented
-# out so re-running `python run.py arch_exp` executes only the remaining 6.
-# Completed results (post-quant BPB, step 2500):
-#   baseline_kv4: 1.26969528
-#   kv4_both:     1.26320724
-#   kv2_both:     1.26880768
+# 3-seed production sweep. RUN_IDs match your existing naming convention so
+# prior seed-42/1337 runs (logs already captured) are not overwritten.
 ARCH_EXP_EXPERIMENTS = [
-    # Control
-    # _arch_exp("baseline_kv4",     "baseline attn, kv=4",  # DONE: 1.26969528
-    #           {"USE_NEW_ATTENTION": "0", "NUM_KV_HEADS": "4",
-    #            "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
-    # New-attention baseline (no feature flags) — isolates cost of always-on
-    # q_norm_scale/k_norm_scale vs. the baseline class.
-    _arch_exp("new_attn_kv4",     "new attn, kv=4, no extras",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
-               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
-    # KV-head sweep
-    _arch_exp("new_attn_kv2",     "new attn, kv=2",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
-               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
-    _arch_exp("new_attn_kv1",     "new attn, kv=1 (MQA)",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "1",
-               "USE_K_GAIN": "0", "USE_HEAD_GATE": "0"}),
-    # Feature ablations at kv=4
-    _arch_exp("kv4_kgain",        "kv=4 + k_gain",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
-               "USE_K_GAIN": "1", "USE_HEAD_GATE": "0"}),
-    _arch_exp("kv4_headgate",     "kv=4 + head_gate",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
-               "USE_K_GAIN": "0", "USE_HEAD_GATE": "1"}),
-    # _arch_exp("kv4_both",         "kv=4 + k_gain + head_gate",  # DONE: 1.26320724
-    #           {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "4",
-    #            "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
-    # Best-combo candidates
-    _arch_exp("kv2_kgain",        "kv=2 + k_gain",
-              {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
-               "USE_K_GAIN": "1", "USE_HEAD_GATE": "0"}),
-    # _arch_exp("kv2_both",         "kv=2 + k_gain + head_gate",  # DONE: 1.26880768
-    #           {"USE_NEW_ATTENTION": "1", "NUM_KV_HEADS": "2",
-    #            "USE_K_GAIN": "1", "USE_HEAD_GATE": "1"}),
+    _arch_exp("kv4_both_8xh100_EMA_42",    "kv4_both + EMA, 8×H100, seed 42",   {"SEED": "42"}),
+    _arch_exp("kv4_both_8xh100_EMA_1337",  "kv4_both + EMA, 8×H100, seed 1337", {"SEED": "1337"}),
+    _arch_exp("kv4_both_8xh100_EMA_2024",  "kv4_both + EMA, 8×H100, seed 2024", {"SEED": "2024"}),
+]
+
+# --- arch_exp_smoke — pipeline smoke test for train_gpt_exp.py -------------
+# 1 GPU, 50 iters, small batch. Confirms every code path wires up and the
+# kv4_both attention stack produces a finite BPB through the full pipeline
+# (training → quantization → sliding-window eval). ~2 min on 1 H100.
+_ARCH_EXP_SMOKE_COMMON = {
+    **_STANDARD,
+    "ITERATIONS": "50",
+    "TRAIN_BATCH_TOKENS": "32768",
+    "VAL_BATCH_SIZE": "32768",
+    "VAL_LOSS_EVERY": "0",
+    "TRAIN_LOG_EVERY": "10",
+    "MAX_WALLCLOCK_SECONDS": "600",
+    "WARMDOWN_ITERS": "10",
+    "WARMUP_STEPS": "5",
+    "EVAL_STRIDE": "512",  # fast final eval on 1 GPU
+    # Production attention stack (same as arch_exp)
+    "USE_NEW_ATTENTION": "1",
+    "NUM_KV_HEADS": "4",
+    "USE_K_GAIN": "1",
+    "USE_HEAD_GATE": "1",
+    # EMA — exercises allocation, per-step update, and swap paths in smoke.
+    "EMA_DECAY": "0.9965",
+}
+
+def _arch_exp_smoke(name, desc, overrides):
+    return {
+        "name": name,
+        "description": desc,
+        "script": "train_gpt_exp.py",
+        "config": {"RUN_ID": f"smoke_exp_{name}", **_ARCH_EXP_SMOKE_COMMON, **overrides},
+    }
+
+ARCH_EXP_SMOKE_EXPERIMENTS = [
+    _arch_exp_smoke("kv4_both_EMA", "kv4_both + EMA pipeline smoke test", {}),
 ]
 
 SUITES = {
@@ -207,6 +220,7 @@ SUITES = {
     "arch_multi": ARCH_MULTI_EXPERIMENTS,
     "arch_smoke": ARCH_SMOKE_EXPERIMENTS,
     "arch_exp": ARCH_EXP_EXPERIMENTS,
+    "arch_exp_smoke": ARCH_EXP_SMOKE_EXPERIMENTS,
 }
 
 # ============================================================================
@@ -398,10 +412,11 @@ examples:
   python run.py arch_smoke   Tiny pipeline smoke test (~2 min on 1 H100)
   python run.py arch         1×H100 iteration config (~30 min)
   python run.py arch_multi   8×H100 submission-shape config (~10 min)
-  python run.py arch_exp     Attention-mechanism ablation grid (9 runs × 2500 steps, 1×H100, disjoint eval)
+  python run.py arch_exp_smoke Experimental-path smoke test (1 GPU, 50 iters, ~2 min)
+  python run.py arch_exp     kv4_both 3-seed 8×H100 production sweep (~30 min total)
 """)
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["setup", "arch", "arch_multi", "arch_smoke", "arch_exp"],
+                        choices=["setup", "arch", "arch_multi", "arch_smoke", "arch_exp", "arch_exp_smoke"],
                         help="Run mode")
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
 
