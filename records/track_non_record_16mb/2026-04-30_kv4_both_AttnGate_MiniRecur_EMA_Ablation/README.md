@@ -3,7 +3,7 @@
 
 ## About me
 
-I'm a software engineer at Cisco, working on an enterprose cloud VPN product - mostly K8's, Go and distributed systems
+I'm a software engineer at Cisco, working on an enterprise cloud VPN product - mostly K8's, Go and distributed systems
 
 Parameter Golf seemed like a reasonable way to get back into ML training, the hands-on way. I worked on it over the evenings and weekends for the last month of the challenge, mostly on one H100, with a few 8xH100 runs at the end to confirm the final numbers.
 
